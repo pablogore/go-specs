@@ -1,0 +1,52 @@
+# GoReleaser config for go-specs (CLI: specs-cli)
+# Release runs on tag push v* (see .github/workflows/release.yml)
+version: 2
+
+project_name: go-specs
+
+builds:
+  - id: specs-cli
+    main: ./tools/specs-cli
+    binary: specs-cli
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+    env:
+      - CGO_ENABLED=0
+    ldflags:
+      - -s -w
+
+archives:
+  - id: default
+    format: binary
+    builds:
+      - specs-cli
+    name_template: "specs-cli-{{ .Os }}-{{ .Arch }}"
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  use: git
+  sort: asc
+  groups:
+    - title: Features
+      regexp: "^feat"
+      order: 0
+    - title: Bug Fixes
+      regexp: "^fix"
+      order: 1
+    - title: Other
+      order: 999
+
+release:
+  draft: false
+  prerelease: auto
+  name_template: "{{ .Tag }}"
