@@ -6,7 +6,7 @@ package benchmarks
 import (
 	"testing"
 
-	specs "github.com/getsyntegrity/go-specs/specs"
+	specs "github.com/pablogore/go-specs/specs"
 )
 
 // Benchmarks migrated from the former bench/ package: BuildSuite-based runner,

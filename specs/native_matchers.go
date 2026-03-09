@@ -5,7 +5,7 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/getsyntegrity/go-specs/assert"
+	"github.com/pablogore/go-specs/assert"
 )
 
 type MatchResult struct {

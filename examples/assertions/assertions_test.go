@@ -3,7 +3,7 @@ package assertions_test
 import (
 	"testing"
 
-	"github.com/getsyntegrity/go-specs/specs"
+	"github.com/pablogore/go-specs/specs"
 )
 
 func TestAssertions(t *testing.T) {

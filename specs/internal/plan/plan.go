@@ -1,7 +1,7 @@
 package plan
 
 import (
-	intregistry "github.com/getsyntegrity/go-specs/specs/internal/registry"
+	intregistry "github.com/pablogore/go-specs/specs/internal/registry"
 )
 
 // ExecutionPlan is a flattened list of spec jobs to run.

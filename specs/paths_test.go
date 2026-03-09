@@ -8,7 +8,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/getsyntegrity/go-specs/report"
+	"github.com/pablogore/go-specs/report"
 )
 
 func TestPathsAnalyzeKeepsSingleNode(t *testing.T) {

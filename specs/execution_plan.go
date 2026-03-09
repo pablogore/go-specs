@@ -7,7 +7,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/getsyntegrity/go-specs/report"
+	"github.com/pablogore/go-specs/report"
 )
 
 // ExecutionPlan holds the flat instruction stream and per-spec metadata for the runner.

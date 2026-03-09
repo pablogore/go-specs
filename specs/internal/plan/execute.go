@@ -3,8 +3,8 @@ package plan
 import (
 	"testing"
 
-	"github.com/getsyntegrity/go-specs/specs"
-	intregistry "github.com/getsyntegrity/go-specs/specs/internal/registry"
+	"github.com/pablogore/go-specs/specs"
+	intregistry "github.com/pablogore/go-specs/specs/internal/registry"
 )
 
 // GetByID returns the job associated with id.

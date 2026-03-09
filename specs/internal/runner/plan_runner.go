@@ -3,9 +3,9 @@ package runner
 import (
 	"testing"
 
-	"github.com/getsyntegrity/go-specs/specs"
-	"github.com/getsyntegrity/go-specs/specs/internal/plan"
-	intregistry "github.com/getsyntegrity/go-specs/specs/internal/registry"
+	"github.com/pablogore/go-specs/specs"
+	"github.com/pablogore/go-specs/specs/internal/plan"
+	intregistry "github.com/pablogore/go-specs/specs/internal/registry"
 )
 
 // RunPlan executes each job in the compiled execution plan.

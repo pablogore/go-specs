@@ -3,7 +3,7 @@ package paths_test
 import (
 	"testing"
 
-	"github.com/getsyntegrity/go-specs/specs"
+	"github.com/pablogore/go-specs/specs"
 )
 
 func TestPaths(t *testing.T) {

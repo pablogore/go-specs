@@ -3,8 +3,8 @@ package runner
 import (
 	"testing"
 
-	"github.com/getsyntegrity/go-specs/specs"
-	intregistry "github.com/getsyntegrity/go-specs/specs/internal/registry"
+	"github.com/pablogore/go-specs/specs"
+	intregistry "github.com/pablogore/go-specs/specs/internal/registry"
 )
 
 func TestRegistryRunnerExecutesSpecs(t *testing.T) {

@@ -6,7 +6,7 @@ package benchmarks
 import (
 	"testing"
 
-	specs "github.com/getsyntegrity/go-specs/specs"
+	specs "github.com/pablogore/go-specs/specs"
 	"github.com/onsi/gomega"
 )
 

@@ -3,7 +3,7 @@ package parallel_test
 import (
 	"testing"
 
-	"github.com/getsyntegrity/go-specs/specs"
+	"github.com/pablogore/go-specs/specs"
 )
 
 func add(a, b int) int {

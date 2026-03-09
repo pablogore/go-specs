@@ -3,8 +3,8 @@ package runner
 import (
 	"testing"
 
-	"github.com/getsyntegrity/go-specs/specs/internal/plan"
-	intregistry "github.com/getsyntegrity/go-specs/specs/internal/registry"
+	"github.com/pablogore/go-specs/specs/internal/plan"
+	intregistry "github.com/pablogore/go-specs/specs/internal/registry"
 )
 
 func TestRunPlanExecutesSpecs(t *testing.T) {

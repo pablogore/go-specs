@@ -3,7 +3,7 @@ package plan
 import (
 	"testing"
 
-	intregistry "github.com/getsyntegrity/go-specs/specs/internal/registry"
+	intregistry "github.com/pablogore/go-specs/specs/internal/registry"
 )
 
 func TestCompileSimpleSpec(t *testing.T) {

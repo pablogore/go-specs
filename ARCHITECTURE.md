@@ -10,17 +10,17 @@ The repository is a **multi-module Go workspace** (no root `go.mod`). A root `go
 
 ```
 go-specs
-├── specs        # runner + DSL (module: github.com/getsyntegrity/go-specs/specs)
-├── assert       # core assertions / matchers (module: github.com/getsyntegrity/go-specs/assert)
-├── matchers     # test helper matchers (module: github.com/getsyntegrity/go-specs/matchers)
-├── gen          # value generators for property testing (module: github.com/getsyntegrity/go-specs/gen)
-├── snapshots    # snapshot storage and comparison (module: github.com/getsyntegrity/go-specs/snapshots)
-├── mock         # mocking utilities (module: github.com/getsyntegrity/go-specs/mock)
-├── report/      # event types and reporter (module: github.com/getsyntegrity/go-specs/report)
+├── specs        # runner + DSL (module: github.com/pablogore/go-specs/specs)
+├── assert       # core assertions / matchers (module: github.com/pablogore/go-specs/assert)
+├── matchers     # test helper matchers (module: github.com/pablogore/go-specs/matchers)
+├── gen          # value generators for property testing (module: github.com/pablogore/go-specs/gen)
+├── snapshots    # snapshot storage and comparison (module: github.com/pablogore/go-specs/snapshots)
+├── mock         # mocking utilities (module: github.com/pablogore/go-specs/mock)
+├── report/      # event types and reporter (module: github.com/pablogore/go-specs/report)
 ├── benchmarks/  # performance benchmarks (go-specs vs Testify vs Gomega)
-├── examples/    # usage examples (module: github.com/getsyntegrity/go-specs/examples)
+├── examples/    # usage examples (module: github.com/pablogore/go-specs/examples)
 └── tools/
-    └── specs-cli/   # CLI (module: github.com/getsyntegrity/go-specs/tools/specs-cli)
+    └── specs-cli/   # CLI (module: github.com/pablogore/go-specs/tools/specs-cli)
 ```
 
 ---
@@ -46,19 +46,19 @@ No cycles: assert, matchers, gen, snapshots, and mock do not depend on specs or 
 
 Public import paths are unchanged for compatibility:
 
-- `github.com/getsyntegrity/go-specs/specs`
-- `github.com/getsyntegrity/go-specs/assert`
-- `github.com/getsyntegrity/go-specs/report`
-- `github.com/getsyntegrity/go-specs/matchers`
-- `github.com/getsyntegrity/go-specs/mock`
-- `github.com/getsyntegrity/go-specs/gen/generators`
-- `github.com/getsyntegrity/go-specs/snapshots`
+- `github.com/pablogore/go-specs/specs`
+- `github.com/pablogore/go-specs/assert`
+- `github.com/pablogore/go-specs/report`
+- `github.com/pablogore/go-specs/matchers`
+- `github.com/pablogore/go-specs/mock`
+- `github.com/pablogore/go-specs/gen/generators`
+- `github.com/pablogore/go-specs/snapshots`
 
 Internal and runner code live under the specs module and use:
 
-- `github.com/getsyntegrity/go-specs/specs/internal/registry`
-- `github.com/getsyntegrity/go-specs/specs/internal/plan`
-- `github.com/getsyntegrity/go-specs/specs/runner`
+- `github.com/pablogore/go-specs/specs/internal/registry`
+- `github.com/pablogore/go-specs/specs/internal/plan`
+- `github.com/pablogore/go-specs/specs/runner`
 
 ---
 
