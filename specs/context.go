@@ -119,6 +119,16 @@ func (c *Context) RecordCoverage(edge uint64) {
 	c.coverage.Hit(edge)
 }
 
+// Step runs the given function as a named step for path-coverage style specs.
+// Used in table-driven tests to cover multiple execution paths; the name identifies the case.
+// If the context has already failed (e.g. FailFast), Step does nothing.
+func (c *Context) Step(name string, fn func()) {
+	if c == nil || c.failed {
+		return
+	}
+	fn()
+}
+
 // Expect returns an expectation for the given actual value. The returned Expectation
 // is reused from a pool; it is returned to the pool when To() or ToEqual() completes.
 func (c *Context) Expect(actual any) *Expectation {
