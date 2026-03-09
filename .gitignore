@@ -1,0 +1,24 @@
+# OS
+.DS_Store
+._*
+
+# IDE / editor
+.idea/
+*.swp
+*.swo
+.vscode/
+
+# Go
+*.test
+*.prof
+coverage.out
+coverage.html
+specs-cli
+*.exe
+
+# Archives
+*.tgz
+*.tar.gz
+
+# Project
+benchmarks/results/*.txt

@@ -1,0 +1,54 @@
+name: Benchmark Suite
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # allow committing charts back to the repo
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+
+      - name: Create results directory
+        run: mkdir -p benchmarks/results
+
+      - name: Run benchmarks
+        run: |
+          cd benchmarks && go test . -bench=. -benchmem -count=5 -run=^$ > results/current.txt 2>&1
+          cd ..
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install matplotlib
+        run: pip install matplotlib
+
+      - name: Generate charts
+        run: python3 scripts/bench_to_chart.py
+
+      - name: Commit and push charts
+        run: |
+          git add benchmarks/results/*.png 2>/dev/null || true
+          if git diff --staged --quiet; then
+            echo "No chart changes to commit"
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git commit -m "chore: update benchmark charts [skip ci]"
+            git push
+          fi

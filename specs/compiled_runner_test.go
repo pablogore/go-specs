@@ -1,0 +1,45 @@
+package specs
+
+import "testing"
+
+func TestCompiledRunner_OrderAndHooks(t *testing.T) {
+	var order []string
+	b := NewBuilder(32)
+	b.AddBefore(func(*Context) { order = append(order, "before1") })
+	b.AddBefore(func(*Context) { order = append(order, "before2") })
+	b.AddAfter(func(*Context) { order = append(order, "after1") })
+	b.AddAfter(func(*Context) { order = append(order, "after2") })
+	b.AddSpec(func(ctx *Context) {
+		order = append(order, "spec1")
+		EqualTo(ctx, 1, 1)
+	})
+	b.AddSpec(func(ctx *Context) {
+		order = append(order, "spec2")
+		EqualTo(ctx, 2, 2)
+	})
+	prog := b.Build()
+	runner := NewRunnerFromProgram(prog)
+	runner.Run(t)
+
+	// Grouped execution: before once, all specs, after once (reverse)
+	want := []string{
+		"before1", "before2", "spec1", "spec2", "after2", "after1",
+	}
+	if len(order) != len(want) {
+		t.Fatalf("order length: got %d, want %d", len(order), len(want))
+	}
+	for i := range want {
+		if order[i] != want[i] {
+			t.Errorf("order[%d]: got %q, want %q", i, order[i], want[i])
+		}
+	}
+}
+
+func TestCompiledRunner_ZeroAllocs(t *testing.T) {
+	b := NewBuilder(8)
+	b.AddSpec(func(ctx *Context) { EqualTo(ctx, 42, 42) })
+	runner := NewRunnerFromProgram(b.Build())
+	var d testing.B
+	runner.Run(&d)
+	// Run should not allocate; check with go test -bench=BenchmarkRunner -benchmem
+}
