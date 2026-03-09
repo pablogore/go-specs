@@ -19,8 +19,8 @@ go-specs
 ├── report/      # event types and reporter (module: github.com/pablogore/go-specs/report)
 ├── benchmarks/  # performance benchmarks (go-specs vs Testify vs Gomega)
 ├── examples/    # usage examples (module: github.com/pablogore/go-specs/examples)
-└── tools/
-    └── specs-cli/   # CLI (module: github.com/pablogore/go-specs/tools/specs-cli)
+└── cmd/
+    └── specs-ci/   # CLI (binary: specs-cli)
 ```
 
 ---
@@ -36,7 +36,7 @@ go-specs
 - **mock** → (none)
 - **benchmarks** → specs
 - **examples** → specs, mock
-- **tools/specs-cli** → specs
+- **cmd/specs-ci** → specs
 
 No cycles: assert, matchers, gen, snapshots, and mock do not depend on specs or runner.
 
@@ -66,9 +66,9 @@ Internal and runner code live under the specs module and use:
 
 From repo root (with `go.work` in effect):
 
-- **Build:** `go build ./assert/... ./specs/... ./report/... ./mock/... ./matchers/... ./gen/... ./snapshots/... ./benchmarks/... ./examples/... ./tools/specs-cli/...`
+- **Build:** `go build ./assert/... ./specs/... ./report/... ./mock/... ./matchers/... ./gen/... ./snapshots/... ./benchmarks/... ./examples/... ./cmd/specs-ci/...`
 - **Test:** `go test ./assert/... ./specs/... ./report/... ./mock/... ./matchers/... ./gen/... ./snapshots/... ./benchmarks/... ./examples/...`
 - **Bench:** `go test ./benchmarks -run='^$' -bench=. -benchmem`
-- **CLI:** `go build -o specs-cli ./tools/specs-cli`
+- **CLI:** `go build -o specs-cli ./cmd/specs-ci`
 
 Or use `make test`, `make bench`, `make build`.

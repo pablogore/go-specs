@@ -2,7 +2,7 @@
 # Run from repository root with go.work enabled.
 # Note: ./... does not work at root (no root module); each module is built/tested explicitly.
 
-MODULES := ./assert/... ./specs/... ./report/... ./mock/... ./matchers/... ./gen/... ./snapshots/... ./benchmarks/... ./examples/... ./tools/specs-cli/...
+MODULES := ./assert/... ./specs/... ./report/... ./mock/... ./matchers/... ./gen/... ./snapshots/... ./benchmarks/... ./examples/... ./cmd/specs-ci/...
 
 BENCH_RESULTS := benchmarks/results
 BENCHSTAT := $(shell go env GOPATH)/bin/benchstat
@@ -65,7 +65,7 @@ lint:
 # Build all modules and the CLI
 build:
 	go build $(MODULES)
-	go build -o specs-cli ./tools/specs-cli
+	go build -o specs-cli ./cmd/specs-ci
 
 # Tidy all modules
 tidy:
@@ -78,7 +78,6 @@ tidy:
 	cd snapshots && go mod tidy
 	cd gen && go mod tidy
 	cd examples && go mod tidy
-	cd tools/specs-cli && go mod tidy
 
 clean:
 	rm -f specs-cli coverage.out coverage.html

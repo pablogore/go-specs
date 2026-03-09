@@ -6,7 +6,7 @@ project_name: go-specs
 
 builds:
   - id: specs-cli
-    main: ./tools/specs-cli
+    main: ./cmd/specs-ci
     binary: specs-cli
     goos:
       - linux
