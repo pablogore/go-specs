@@ -1,5 +1,5 @@
-# GoReleaser config for go-specs (CLI: specs-cli)
-# Release runs on tag push v* (see .github/workflows/release.yml)
+# GoReleaser for go-specs (CLI: specs-cli)
+# Run on tag push v* or via release workflow on merge to main
 version: 2
 
 project_name: go-specs
@@ -25,8 +25,9 @@ builds:
 
 archives:
   - id: default
-    format: binary
-    builds:
+    formats:
+      - binary
+    ids:
       - specs-cli
     name_template: "specs-cli-{{ .Os }}-{{ .Arch }}"
 

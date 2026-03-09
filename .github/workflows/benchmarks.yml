@@ -8,8 +8,6 @@ on:
 jobs:
   bench:
     runs-on: ubuntu-latest
-    env:
-      GOTOOLCHAIN: local
     permissions:
       contents: write  # allow committing charts back to the repo
 
@@ -22,8 +20,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.23"
-          cache: false  # avoid tar "File exists" when restoring cache with toolchain files
+          go-version: "1.26.0"
 
       - name: Create results directory
         run: mkdir -p benchmarks/results
