@@ -17,13 +17,25 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Skip if already tagged
+        id: skip
+        run: |
+          if git describe --tags --exact-match HEAD 2>/dev/null; then
+            echo "already_tagged=true" >> $GITHUB_OUTPUT
+            echo "HEAD already has a tag, skipping release"
+          else
+            echo "already_tagged=false" >> $GITHUB_OUTPUT
+          fi
+
       - name: Set up Go
+        if: steps.skip.outputs.already_tagged != 'true'
         uses: actions/setup-go@v5
         with:
           go-version: "1.26.0"
 
       - name: Bump version and create tag
         id: tag
+        if: steps.skip.outputs.already_tagged != 'true'
         run: |
           LATEST=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
           LATEST="${LATEST#v}"
@@ -40,6 +52,7 @@ jobs:
           git push origin "$NEW_TAG"
 
       - name: Run GoReleaser
+        if: steps.skip.outputs.already_tagged != 'true'
         uses: goreleaser/goreleaser-action@v6
         with:
           distribution: goreleaser
