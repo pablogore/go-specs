@@ -2,7 +2,7 @@
 # Run from repository root with go.work enabled.
 # Note: ./... does not work at root (no root module); each module is built/tested explicitly.
 
-MODULES := ./assert/... ./specs/... ./report/... ./mock/... ./matchers/... ./gen/... ./snapshots/... ./benchmarks/... ./examples/... ./cmd/specs-ci/...
+MODULES := ./assert/... ./specs/... ./report/... ./mock/... ./gen/... ./snapshots/... ./benchmarks/... ./examples/... ./cmd/specs-ci/...
 
 BENCH_RESULTS := benchmarks/results
 BENCHSTAT := $(shell go env GOPATH)/bin/benchstat
@@ -60,7 +60,7 @@ bench-compare:
 
 # Lint (golangci-lint if available, else go vet)
 lint:
-	@which golangci-lint >/dev/null 2>&1 && golangci-lint run ./assert/... ./specs/... ./report/... ./mock/... ./matchers/... ./gen/... ./snapshots/... ./benchmarks/... ./examples/... || (go vet ./assert/... ./specs/... ./report/... ./mock/... ./matchers/... ./gen/... ./snapshots/... ./benchmarks/... ./examples/...)
+	@which golangci-lint >/dev/null 2>&1 && golangci-lint run ./assert/... ./specs/... ./report/... ./mock/... ./gen/... ./snapshots/... ./benchmarks/... ./examples/... || (go vet ./assert/... ./specs/... ./report/... ./mock/... ./gen/... ./snapshots/... ./benchmarks/... ./examples/...)
 
 # Build all modules and the CLI
 build:
@@ -73,7 +73,6 @@ tidy:
 	cd specs && go mod tidy
 	cd report && go mod tidy
 	cd mock && go mod tidy
-	cd matchers && go mod tidy
 	cd assert && go mod tidy
 	cd snapshots && go mod tidy
 	cd gen && go mod tidy

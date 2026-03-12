@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/pablogore/go-specs/report"
+	"github.com/pablogore/go-specs/specs/property"
 )
 
 func TestPathsAnalyzeKeepsSingleNode(t *testing.T) {
@@ -40,7 +41,7 @@ func TestPathsAnalyzeKeepsSingleNode(t *testing.T) {
 		t.Fatal("expected path generator metadata")
 	}
 	var names []string
-	specNode.PathGen.ForEach(func(values PathValues) {
+	specNode.PathGen.ForEach(t, func(values PathValues) {
 		names = append(names, specNode.PathGen.FormatName(specNode.Name, values))
 	})
 	expected := []string{
@@ -349,33 +350,25 @@ func TestBoolShrinkerReducesValue(t *testing.T) {
 }
 
 func TestPathGeneratorShrink(t *testing.T) {
-	gen := newPathGenerator([]PathVar{
-		{Name: "x", rangeSpec: &intRange{min: 0, max: 1000}},
+	gen := property.NewPathGenerator([]property.PathVar{
+		property.IntRangeVar("x", 0, 1000),
 	}, nil, 0, 0, false, 0, 0, 0)
-	initial := PathValues{
-		values:  []any{100},
-		present: []bool{true},
-		index:   map[string]int{"x": 0},
-	}
-	reduced := gen.shrinkValues(initial, func(pv PathValues) bool {
-		return pv.values[0].(int) > 10
+	initial := property.NewPathValuesForTest(map[string]int{"x": 0}, []any{100})
+	reduced := gen.ShrinkValues(initial, func(pv PathValues) bool {
+		return pv.Int("x") > 10
 	})
-	if reduced.values[0].(int) > 10 {
-		t.Fatalf("expected reduced value <= 10, got %v", reduced.values[0])
+	if reduced.Int("x") > 10 {
+		t.Fatalf("expected reduced value <= 10, got %v", reduced.Int("x"))
 	}
 }
 
 func TestShrinkerFindsMinimalFailing(t *testing.T) {
-	gen := newPathGenerator([]PathVar{
-		{Name: "x", rangeSpec: &intRange{min: 0, max: 1000}},
-		{Name: "y", rangeSpec: &intRange{min: 0, max: 1000}},
+	gen := property.NewPathGenerator([]property.PathVar{
+		property.IntRangeVar("x", 0, 1000),
+		property.IntRangeVar("y", 0, 1000),
 	}, nil, 0, 0, false, 0, 0, 0)
 	index := map[string]int{"x": 0, "y": 1}
-	failing := PathValues{
-		values:  []any{937, 421},
-		present: []bool{true, true},
-		index:   index,
-	}
+	failing := property.NewPathValuesForTest(index, []any{937, 421})
 	// Property: holds when x == 0 && y == 0; fails otherwise. Minimal failing is (0,1) or (1,0).
 	test := func(pv PathValues) bool {
 		x := pv.Int("x")
@@ -408,15 +401,11 @@ func TestShrinkerFindsMinimalFailing(t *testing.T) {
 }
 
 func TestShrinkerBinaryShrinksToZero(t *testing.T) {
-	gen := newPathGenerator([]PathVar{
-		{Name: "x", rangeSpec: &intRange{min: 0, max: 1000}},
+	gen := property.NewPathGenerator([]property.PathVar{
+		property.IntRangeVar("x", 0, 1000),
 	}, nil, 0, 0, false, 0, 0, 0)
 	index := map[string]int{"x": 0}
-	failing := PathValues{
-		values:  []any{937},
-		present: []bool{true},
-		index:   index,
-	}
+	failing := property.NewPathValuesForTest(index, []any{937})
 	// Property: holds when x == 0. So minimal failing is 1 (binary search toward zero).
 	test := func(pv PathValues) bool {
 		return pv.Int("x") == 0
@@ -465,16 +454,12 @@ func TestExploreSmartRuns(t *testing.T) {
 }
 
 func TestShrinkerCoordinateDescentMultipleInts(t *testing.T) {
-	gen := newPathGenerator([]PathVar{
-		{Name: "x", rangeSpec: &intRange{min: 0, max: 1000}},
-		{Name: "y", rangeSpec: &intRange{min: 0, max: 1000}},
+	gen := property.NewPathGenerator([]property.PathVar{
+		property.IntRangeVar("x", 0, 1000),
+		property.IntRangeVar("y", 0, 1000),
 	}, nil, 0, 0, false, 0, 0, 0)
 	index := map[string]int{"x": 0, "y": 1}
-	failing := PathValues{
-		values:  []any{937, 421},
-		present: []bool{true, true},
-		index:   index,
-	}
+	failing := property.NewPathValuesForTest(index, []any{937, 421})
 	// Property: holds when x <= 0 && y <= 0. Minimal failing is one of (1,0), (0,1), (1,1).
 	test := func(pv PathValues) bool {
 		return pv.Int("x") <= 0 && pv.Int("y") <= 0

@@ -5,8 +5,9 @@ package runner
 import (
 	"testing"
 
-	"github.com/pablogore/go-specs/specs"
+	"github.com/pablogore/go-specs/specs/ctx"
 	intregistry "github.com/pablogore/go-specs/specs/internal/registry"
+	"github.com/pablogore/go-specs/specs/property"
 )
 
 // RegistryRunner executes specs recorded in a registry tree.
@@ -36,11 +37,11 @@ func (r *RegistryRunner) walk(node *intregistry.Node, t *testing.T) {
 	switch node.Type {
 	case intregistry.NodeIt:
 		t.Run(node.Name, func(tt *testing.T) {
-			if gen, ok := node.Path.(*specs.PathGenerator); ok && gen != nil {
+			if gen, ok := node.Path.(*property.PathGenerator); ok && gen != nil {
 				runRegistryPath(tt, node, gen)
 				return
 			}
-			runRegistryLeaf(tt, node, specs.PathValues{})
+			runRegistryLeaf(tt, node, property.PathValues{})
 		})
 	default:
 		t.Run(node.Name, func(tt *testing.T) {
@@ -51,17 +52,17 @@ func (r *RegistryRunner) walk(node *intregistry.Node, t *testing.T) {
 	}
 }
 
-func runRegistryLeaf(t *testing.T, node *intregistry.Node, values specs.PathValues) {
-	ctx := specs.NewContext(t)
-	ctx.SetPathValues(values)
+func runRegistryLeaf(t *testing.T, node *intregistry.Node, values property.PathValues) {
+	c := ctx.NewContext(t)
+	c.SetPathValues(values)
 	if node.Fn != nil {
-		node.Fn(ctx)
+		node.Fn(c)
 	}
 }
 
-func runRegistryPath(t *testing.T, node *intregistry.Node, gen *specs.PathGenerator) {
+func runRegistryPath(t *testing.T, node *intregistry.Node, gen *property.PathGenerator) {
 	ran := false
-	gen.ForEach(func(values specs.PathValues) {
+	gen.ForEach(t, func(values property.PathValues) {
 		ran = true
 		name := gen.FormatName(node.Name, values)
 		t.Run(name, func(tt *testing.T) {
@@ -69,6 +70,6 @@ func runRegistryPath(t *testing.T, node *intregistry.Node, gen *specs.PathGenera
 		})
 	})
 	if !ran {
-		runRegistryLeaf(t, node, specs.PathValues{})
+		runRegistryLeaf(t, node, property.PathValues{})
 	}
 }

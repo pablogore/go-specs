@@ -18,7 +18,7 @@ func TestCompiledRunner_OrderAndHooks(t *testing.T) {
 		EqualTo(ctx, 2, 2)
 	})
 	prog := b.Build()
-	runner := NewRunnerFromProgram(prog)
+	runner := NewRunnerFromProgram(prog, nil)
 	runner.Run(t)
 
 	// Grouped execution: before once, all specs, after once (reverse)
@@ -38,7 +38,7 @@ func TestCompiledRunner_OrderAndHooks(t *testing.T) {
 func TestCompiledRunner_ZeroAllocs(t *testing.T) {
 	b := NewBuilder(8)
 	b.AddSpec(func(ctx *Context) { EqualTo(ctx, 42, 42) })
-	runner := NewRunnerFromProgram(b.Build())
+	runner := NewRunnerFromProgram(b.Build(), nil)
 	var d testing.B
 	runner.Run(&d)
 	// Run should not allocate; check with go test -bench=BenchmarkRunner -benchmem

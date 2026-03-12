@@ -19,7 +19,7 @@ func TestSnapshotMatchPasses(t *testing.T) {
 
 func TestSnapshotMissingFails(t *testing.T) {
 	fake := &fakeSnapshotBackend{}
-	runSnapshot(fake, "test.go", "nonexistent-key", 42)
+	RunSnapshot(fake, "test.go", "nonexistent-key", 42)
 	if fake.fatalfMsg == "" {
 		t.Fatal("expected Fatalf when snapshot key is missing")
 	}

@@ -38,7 +38,7 @@ func (p *ExecutionPlan) RunIDs(t *testing.T, ids []uint32) {
 
 func runPlanPathJob(t *testing.T, job *Job, gen *specs.PathGenerator) {
 	ran := false
-	gen.ForEach(func(values specs.PathValues) {
+	gen.ForEach(t, func(values specs.PathValues) {
 		ran = true
 		name := gen.FormatName(job.Path, values)
 		t.Run(name, func(tt *testing.T) {

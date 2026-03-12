@@ -11,8 +11,7 @@ The repository is a **multi-module Go workspace** (no root `go.mod`). A root `go
 ```
 go-specs
 ├── specs        # runner + DSL (module: github.com/pablogore/go-specs/specs)
-├── assert       # core assertions / matchers (module: github.com/pablogore/go-specs/assert)
-├── matchers     # test helper matchers (module: github.com/pablogore/go-specs/matchers)
+├── assert       # core assertions and matchers (module: github.com/pablogore/go-specs/assert)
 ├── gen          # value generators for property testing (module: github.com/pablogore/go-specs/gen)
 ├── snapshots    # snapshot storage and comparison (module: github.com/pablogore/go-specs/snapshots)
 ├── mock         # mocking utilities (module: github.com/pablogore/go-specs/mock)
@@ -30,7 +29,6 @@ go-specs
 - **specs** → assert, report, snapshots
 - **assert** → (none)
 - **report** → (none)
-- **matchers** → (none)
 - **gen** → (none)
 - **snapshots** → (none)
 - **mock** → (none)
@@ -38,7 +36,7 @@ go-specs
 - **examples** → specs, mock
 - **cmd/specs-ci** → specs
 
-No cycles: assert, matchers, gen, snapshots, and mock do not depend on specs or runner.
+No cycles: assert, gen, snapshots, and mock do not depend on specs or runner.
 
 ---
 
@@ -49,7 +47,6 @@ Public import paths are unchanged for compatibility:
 - `github.com/pablogore/go-specs/specs`
 - `github.com/pablogore/go-specs/assert`
 - `github.com/pablogore/go-specs/report`
-- `github.com/pablogore/go-specs/matchers`
 - `github.com/pablogore/go-specs/mock`
 - `github.com/pablogore/go-specs/gen/generators`
 - `github.com/pablogore/go-specs/snapshots`
@@ -66,8 +63,8 @@ Internal and runner code live under the specs module and use:
 
 From repo root (with `go.work` in effect):
 
-- **Build:** `go build ./assert/... ./specs/... ./report/... ./mock/... ./matchers/... ./gen/... ./snapshots/... ./benchmarks/... ./examples/... ./cmd/specs-ci/...`
-- **Test:** `go test ./assert/... ./specs/... ./report/... ./mock/... ./matchers/... ./gen/... ./snapshots/... ./benchmarks/... ./examples/...`
+- **Build:** `go build ./assert/... ./specs/... ./report/... ./mock/... ./gen/... ./snapshots/... ./benchmarks/... ./examples/... ./cmd/specs-ci/...`
+- **Test:** `go test ./assert/... ./specs/... ./report/... ./mock/... ./gen/... ./snapshots/... ./benchmarks/... ./examples/...`
 - **Bench:** `go test ./benchmarks -run='^$' -bench=. -benchmem`
 - **CLI:** `go build -o specs-cli ./cmd/specs-ci`
 

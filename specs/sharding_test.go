@@ -3,6 +3,9 @@ package specs
 import (
 	"os"
 	"testing"
+
+	"github.com/pablogore/go-specs/specs/compiler"
+	"github.com/pablogore/go-specs/specs/runner"
 )
 
 func TestShardSpecs(t *testing.T) {
@@ -51,7 +54,7 @@ func TestShardSpecs(t *testing.T) {
 }
 
 func TestShardBCProgram(t *testing.T) {
-	b := NewBCBuilder(32)
+	b := compiler.NewBCBuilder(32)
 	b.AddBefore(func(*Context) {})
 	b.AddSpec(func(*Context) {})
 	b.AddSpec(func(*Context) {})
@@ -62,7 +65,7 @@ func TestShardBCProgram(t *testing.T) {
 	}
 
 	// shard 1/3 → one spec
-	shard := ShardBCProgram(prog, 1, 3)
+	shard := runner.ShardBCProgram(prog, 1, 3)
 	if shard.NumSpecs() != 1 {
 		t.Errorf("shard 1/3: got %d specs, want 1", shard.NumSpecs())
 	}
@@ -71,7 +74,7 @@ func TestShardBCProgram(t *testing.T) {
 	}
 
 	// invalid: return original
-	out := ShardBCProgram(prog, -1, 2)
+	out := runner.ShardBCProgram(prog, -1, 2)
 	if out.NumSpecs() != 3 {
 		t.Errorf("invalid: want passthrough 3 specs, got %d", out.NumSpecs())
 	}

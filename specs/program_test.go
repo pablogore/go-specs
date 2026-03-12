@@ -13,10 +13,10 @@ func TestProgram_DescribeBeforeEachIt(t *testing.T) {
 		b.It("adds", testAdd)
 	})
 	prog := b.Program()
-	if len(prog.Groups) != 1 || len(prog.Groups[0].before) != 1 || len(prog.Groups[0].specs) != 1 || len(prog.Groups[0].after) != 0 {
-		t.Fatalf("expected one group with before=1, specs=1, after=0; got %d groups", len(prog.Groups))
+	if prog.NumGroups() != 1 || prog.GroupBeforeCount(0) != 1 || prog.GroupSpecCount(0) != 1 || prog.GroupAfterCount(0) != 0 {
+		t.Fatalf("expected one group with before=1, specs=1, after=0; got %d groups", prog.NumGroups())
 	}
-	r := NewRunner(prog)
+	r := NewRunner(prog, nil)
 	r.Run(t)
 	if len(order) != 2 || order[0] != "setup" || order[1] != "testAdd" {
 		t.Errorf("order=%v, want [setup, testAdd]", order)
@@ -37,14 +37,13 @@ func TestProgram_GroupingBehavior(t *testing.T) {
 		b.It("sub", testSub)
 	})
 	prog := b.Program()
-	if len(prog.Groups) != 1 {
-		t.Fatalf("expected 1 group; got %d", len(prog.Groups))
+	if prog.NumGroups() != 1 {
+		t.Fatalf("expected 1 group; got %d", prog.NumGroups())
 	}
-	g := prog.Groups[0]
-	if len(g.before) != 1 || len(g.specs) != 2 || len(g.after) != 0 {
-		t.Fatalf("group: before=%d specs=%d after=%d; want before=1 specs=2 after=0", len(g.before), len(g.specs), len(g.after))
+	if prog.GroupBeforeCount(0) != 1 || prog.GroupSpecCount(0) != 2 || prog.GroupAfterCount(0) != 0 {
+		t.Fatalf("group: before=%d specs=%d after=%d; want before=1 specs=2 after=0", prog.GroupBeforeCount(0), prog.GroupSpecCount(0), prog.GroupAfterCount(0))
 	}
-	r := NewRunner(prog)
+	r := NewRunner(prog, nil)
 	r.Run(t)
 	want := []string{"setup", "testAdd", "testSub"}
 	if len(order) != 3 || order[0] != "setup" || order[1] != "testAdd" || order[2] != "testSub" {
@@ -66,7 +65,7 @@ func TestProgram_NestedDescribeHooks(t *testing.T) {
 		})
 	})
 	prog := b.Program()
-	r := NewRunner(prog)
+	r := NewRunner(prog, nil)
 	r.Run(t)
 	// Grouped: before once, all specs, after once (reverse)
 	want := []string{
@@ -91,7 +90,7 @@ func TestProgram_FlatAddBeforeAddSpecOrder(t *testing.T) {
 	b.AddAfter(func(*Context) { order = append(order, "after2") })
 	b.AddSpec(func(*Context) { order = append(order, "spec1") })
 	b.AddSpec(func(*Context) { order = append(order, "spec2") })
-	runner := NewRunnerFromProgram(b.Build())
+	runner := NewRunnerFromProgram(b.Build(), nil)
 	runner.Run(t)
 	// Grouped: before once, all specs, after once (reverse)
 	want := []string{
@@ -116,14 +115,10 @@ func TestProgram_SkipRemoval(t *testing.T) {
 		b.It("c", func(*Context) { order = append(order, "c") })
 	})
 	prog := b.Build()
-	if len(prog.Groups) != 1 || len(prog.Groups[0].specs) != 2 {
-		nSpecs := 0
-		if len(prog.Groups) > 0 {
-			nSpecs = len(prog.Groups[0].specs)
-		}
-		t.Fatalf("expected one group with 2 specs (a and c); got %d groups, first group specs %d", len(prog.Groups), nSpecs)
+	if prog.NumGroups() != 1 || prog.GroupSpecCount(0) != 2 {
+		t.Fatalf("expected one group with 2 specs (a and c); got %d groups, first group specs %d", prog.NumGroups(), prog.GroupSpecCount(0))
 	}
-	r := NewRunner(prog)
+	r := NewRunner(prog, nil)
 	r.Run(t)
 	want := []string{"a", "c"}
 	if len(order) != 2 || order[0] != "a" || order[1] != "c" {
@@ -137,10 +132,10 @@ func TestProgram_SkipWithHelper(t *testing.T) {
 	b.It("wrapped skip", Skip(func(*Context) { order = append(order, "skipped") }))
 	b.It("runs", func(*Context) { order = append(order, "runs") })
 	prog := b.Build()
-	if len(prog.Groups) != 1 || len(prog.Groups[0].specs) != 1 {
-		t.Fatalf("expected one group with 1 spec; got %d groups", len(prog.Groups))
+	if prog.NumGroups() != 1 || prog.GroupSpecCount(0) != 1 {
+		t.Fatalf("expected one group with 1 spec; got %d groups", prog.NumGroups())
 	}
-	r := NewRunner(prog)
+	r := NewRunner(prog, nil)
 	r.Run(t)
 	if len(order) != 1 || order[0] != "runs" {
 		t.Errorf("order=%v, want [runs]", order)
@@ -154,10 +149,10 @@ func TestProgram_FocusFiltering(t *testing.T) {
 	b.FIt("B", func(*Context) { order = append(order, "B") })
 	b.It("C", func(*Context) { order = append(order, "C") })
 	prog := b.Build()
-	if len(prog.Groups) != 1 || len(prog.Groups[0].specs) != 1 {
-		t.Fatalf("expected one group with 1 spec (only B); got %d groups", len(prog.Groups))
+	if prog.NumGroups() != 1 || prog.GroupSpecCount(0) != 1 {
+		t.Fatalf("expected one group with 1 spec (only B); got %d groups", prog.NumGroups())
 	}
-	r := NewRunner(prog)
+	r := NewRunner(prog, nil)
 	r.Run(t)
 	if len(order) != 1 || order[0] != "B" {
 		t.Errorf("order=%v, want [B]", order)
@@ -173,10 +168,10 @@ func TestProgram_ParallelGrouping(t *testing.T) {
 	b.ItParallel("C", func(*Context) { order = append(order, "C") })
 	b.It("D", func(*Context) { order = append(order, "D") })
 	prog := b.Build()
-	if len(prog.Groups) != 3 {
-		t.Fatalf("expected 3 groups (A, parallel B+C, D); got %d", len(prog.Groups))
+	if prog.NumGroups() != 3 {
+		t.Fatalf("expected 3 groups (A, parallel B+C, D); got %d", prog.NumGroups())
 	}
-	r := NewRunner(prog)
+	r := NewRunner(prog, nil)
 	r.Run(t)
 	if len(order) != 4 {
 		t.Fatalf("order len=%d, want 4", len(order))
@@ -195,7 +190,7 @@ func TestProgram_FailFastStopsExecution(t *testing.T) {
 	b.AddSpec(func(ctx *Context) { EqualTo(ctx, 1, 1) })
 	b.AddSpec(func(ctx *Context) { EqualTo(ctx, 2, 2) })
 	prog := b.Build()
-	r := NewRunner(prog)
+	r := NewRunner(prog, nil)
 	r.FailFast = true
 	r.Run(t)
 	// Just verify no panic; FailFast path is tested by runner loop
@@ -212,10 +207,10 @@ func TestFocusFiltersSpecs(t *testing.T) {
 	b.FIt("B", func(*Context) { order = append(order, "B") })
 	b.It("C", func(*Context) { order = append(order, "C") })
 	prog := b.Build()
-	if len(prog.Groups) != 1 || len(prog.Groups[0].specs) != 1 {
-		t.Fatalf("expected 1 group with 1 spec (B only); got %d groups", len(prog.Groups))
+	if prog.NumGroups() != 1 || prog.GroupSpecCount(0) != 1 {
+		t.Fatalf("expected 1 group with 1 spec (B only); got %d groups", prog.NumGroups())
 	}
-	r := NewRunner(prog)
+	r := NewRunner(prog, nil)
 	r.Run(t)
 	if len(order) != 1 || order[0] != "B" {
 		t.Errorf("order=%v, want [B]", order)
@@ -230,10 +225,10 @@ func TestSkipRemovesSpecs(t *testing.T) {
 	b.SkipIt("b", func(*Context) { order = append(order, "b") })
 	b.It("c", func(*Context) { order = append(order, "c") })
 	prog := b.Build()
-	if len(prog.Groups) != 1 || len(prog.Groups[0].specs) != 2 {
-		t.Fatalf("expected 1 group with 2 specs (a, c); got %d groups, %d specs", len(prog.Groups), len(prog.Groups[0].specs))
+	if prog.NumGroups() != 1 || prog.GroupSpecCount(0) != 2 {
+		t.Fatalf("expected 1 group with 2 specs (a, c); got %d groups, %d specs", prog.NumGroups(), prog.GroupSpecCount(0))
 	}
-	r := NewRunner(prog)
+	r := NewRunner(prog, nil)
 	r.Run(t)
 	if len(order) != 2 || order[0] != "a" || order[1] != "c" {
 		t.Errorf("order=%v, want [a, c]", order)
@@ -250,10 +245,10 @@ func TestFocusAndSkipInteraction(t *testing.T) {
 	b.FIt("D", func(*Context) { order = append(order, "D") })
 	prog := b.Build()
 	// Only B and D (focused); A and C dropped (A not focused, C skipped)
-	if len(prog.Groups) != 1 || len(prog.Groups[0].specs) != 2 {
-		t.Fatalf("expected 1 group with 2 specs (B, D); got %d groups, %d specs", len(prog.Groups), len(prog.Groups[0].specs))
+	if prog.NumGroups() != 1 || prog.GroupSpecCount(0) != 2 {
+		t.Fatalf("expected 1 group with 2 specs (B, D); got %d groups, %d specs", prog.NumGroups(), prog.GroupSpecCount(0))
 	}
-	r := NewRunner(prog)
+	r := NewRunner(prog, nil)
 	r.Run(t)
 	want := []string{"B", "D"}
 	if len(order) != 2 || order[0] != "B" || order[1] != "D" {
@@ -269,10 +264,10 @@ func TestFocusWrapper(t *testing.T) {
 	b.It("B", Focus(func(*Context) { order = append(order, "B") }))
 	b.It("C", func(*Context) { order = append(order, "C") })
 	prog := b.Build()
-	if len(prog.Groups) != 1 || len(prog.Groups[0].specs) != 1 {
-		t.Fatalf("expected 1 group with 1 spec (B); got %d groups", len(prog.Groups))
+	if prog.NumGroups() != 1 || prog.GroupSpecCount(0) != 1 {
+		t.Fatalf("expected 1 group with 1 spec (B); got %d groups", prog.NumGroups())
 	}
-	r := NewRunner(prog)
+	r := NewRunner(prog, nil)
 	r.Run(t)
 	if len(order) != 1 || order[0] != "B" {
 		t.Errorf("order=%v, want [B]", order)
@@ -287,10 +282,10 @@ func TestParallelGroupExecution(t *testing.T) {
 	b.ItParallel("B", func(*Context) { order = append(order, "B") })
 	b.ItParallel("C", func(*Context) { order = append(order, "C") })
 	prog := b.Build()
-	if len(prog.Groups) != 1 || len(prog.Groups[0].specs) != 1 {
-		t.Fatalf("expected 1 group with 1 step (parallel B,C); got %d groups, %d specs", len(prog.Groups), len(prog.Groups[0].specs))
+	if prog.NumGroups() != 1 || prog.GroupSpecCount(0) != 1 {
+		t.Fatalf("expected 1 group with 1 step (parallel B,C); got %d groups, %d specs", prog.NumGroups(), prog.GroupSpecCount(0))
 	}
-	r := NewRunner(prog)
+	r := NewRunner(prog, nil)
 	r.Run(t)
 	if len(order) != 2 {
 		t.Fatalf("order len=%d, want 2", len(order))
@@ -311,10 +306,10 @@ func TestParallelMixedWithSequential(t *testing.T) {
 	b.ItParallel("C", func(*Context) { order = append(order, "C") })
 	b.It("D", func(*Context) { order = append(order, "D") })
 	prog := b.Build()
-	if len(prog.Groups) != 3 {
-		t.Fatalf("expected 3 groups (A, parallel B+C, D); got %d", len(prog.Groups))
+	if prog.NumGroups() != 3 {
+		t.Fatalf("expected 3 groups (A, parallel B+C, D); got %d", prog.NumGroups())
 	}
-	r := NewRunner(prog)
+	r := NewRunner(prog, nil)
 	r.Run(t)
 	if len(order) != 4 {
 		t.Fatalf("order len=%d, want 4", len(order))
@@ -338,10 +333,10 @@ func TestProgramGrouping(t *testing.T) {
 		b.It("sub", func(*Context) { order = append(order, "testSub") })
 	})
 	prog := b.Build()
-	if len(prog.Groups) != 1 || len(prog.Groups[0].before) != 1 || len(prog.Groups[0].specs) != 2 || len(prog.Groups[0].after) != 0 {
-		t.Fatalf("expected 1 group with before=1, specs=2, after=0; got %d groups", len(prog.Groups))
+	if prog.NumGroups() != 1 || prog.GroupBeforeCount(0) != 1 || prog.GroupSpecCount(0) != 2 || prog.GroupAfterCount(0) != 0 {
+		t.Fatalf("expected 1 group with before=1, specs=2, after=0; got %d groups", prog.NumGroups())
 	}
-	r := NewRunner(prog)
+	r := NewRunner(prog, nil)
 	r.Run(t)
 	want := []string{"setup", "testAdd", "testSub"}
 	if len(order) != 3 || order[0] != "setup" || order[1] != "testAdd" || order[2] != "testSub" {
@@ -357,10 +352,10 @@ func TestFocusFiltering(t *testing.T) {
 	b.FIt("B", func(*Context) { order = append(order, "B") })
 	b.It("C", func(*Context) { order = append(order, "C") })
 	prog := b.Build()
-	if len(prog.Groups) != 1 || len(prog.Groups[0].specs) != 1 {
-		t.Fatalf("expected 1 group with 1 spec (B only); got %d groups", len(prog.Groups))
+	if prog.NumGroups() != 1 || prog.GroupSpecCount(0) != 1 {
+		t.Fatalf("expected 1 group with 1 spec (B only); got %d groups", prog.NumGroups())
 	}
-	r := NewRunner(prog)
+	r := NewRunner(prog, nil)
 	r.Run(t)
 	if len(order) != 1 || order[0] != "B" {
 		t.Errorf("order=%v, want [B]", order)
@@ -375,10 +370,10 @@ func TestSkipRemoval(t *testing.T) {
 	b.SkipIt("b", func(*Context) { order = append(order, "b") })
 	b.It("c", func(*Context) { order = append(order, "c") })
 	prog := b.Build()
-	if len(prog.Groups) != 1 || len(prog.Groups[0].specs) != 2 {
-		t.Fatalf("expected 1 group with 2 specs (a,c); got %d groups", len(prog.Groups))
+	if prog.NumGroups() != 1 || prog.GroupSpecCount(0) != 2 {
+		t.Fatalf("expected 1 group with 2 specs (a,c); got %d groups", prog.NumGroups())
 	}
-	r := NewRunner(prog)
+	r := NewRunner(prog, nil)
 	r.Run(t)
 	if len(order) != 2 || order[0] != "a" || order[1] != "c" {
 		t.Errorf("order=%v, want [a, c]", order)
@@ -395,10 +390,10 @@ func TestParallelExecution(t *testing.T) {
 	b.ItParallel("C", func(*Context) { order = append(order, "C") })
 	b.It("D", func(*Context) { order = append(order, "D") })
 	prog := b.Build()
-	if len(prog.Groups) != 3 {
-		t.Fatalf("expected 3 groups (A, parallel B+C, D); got %d", len(prog.Groups))
+	if prog.NumGroups() != 3 {
+		t.Fatalf("expected 3 groups (A, parallel B+C, D); got %d", prog.NumGroups())
 	}
-	r := NewRunner(prog)
+	r := NewRunner(prog, nil)
 	r.Run(t)
 	if len(order) != 4 {
 		t.Fatalf("order len=%d, want 4", len(order))
@@ -423,10 +418,10 @@ func TestParallelInsideDescribe(t *testing.T) {
 		b.ItParallel("C", func(*Context) { order = append(order, "C") })
 	})
 	prog := b.Build()
-	if len(prog.Groups) != 1 || len(prog.Groups[0].specs) != 1 {
-		t.Fatalf("expected 1 group with 1 parallel step; got %d groups", len(prog.Groups))
+	if prog.NumGroups() != 1 || prog.GroupSpecCount(0) != 1 {
+		t.Fatalf("expected 1 group with 1 parallel step; got %d groups", prog.NumGroups())
 	}
-	r := NewRunner(prog)
+	r := NewRunner(prog, nil)
 	r.Run(t)
 	// Each parallel spec runs before+fn (no after in this example); so we get before,B,before,C or before,C,before,B
 	if len(order) != 4 {
@@ -461,7 +456,7 @@ func BenchmarkRunner_Program(b *testing.B) {
 		}
 	})
 	prog := builder.Build()
-	r := NewRunner(prog)
+	r := NewRunner(prog, nil)
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -479,8 +474,8 @@ func TestRunShard(t *testing.T) {
 	b.It("C", func(*Context) { order = append(order, "C") })
 	b.It("D", func(*Context) { order = append(order, "D") })
 	prog := b.Build()
-	if len(prog.Groups) != 1 || len(prog.Groups[0].specs) != 4 {
-		t.Fatalf("expected 1 group with 4 specs; got %d groups", len(prog.Groups))
+	if prog.NumGroups() != 1 || prog.GroupSpecCount(0) != 4 {
+		t.Fatalf("expected 1 group with 4 specs; got %d groups", prog.NumGroups())
 	}
 	// Shard 1 of 2: groups at index 1, 3 (0-based) -> only group 0 is at index 0, so we use group indices. Actually RunShard uses gi % shardCount == shardIndex. So for 1 group (gi=0): 0%2==0 runs on shard 0, 0%2==1 runs on shard 1. So with 1 group, shard 0 gets it, shard 1 gets nothing. So we need multiple groups to test. Let me have 4 separate specs that don't coalesce - e.g. 4 Describes each with one It. Then we have 4 groups. Shard 0: groups 0,2; shard 1: groups 1,3. So order for shard 0 would be A,C and shard 1 would be B,D.
 	b2 := NewBuilder()
@@ -489,8 +484,8 @@ func TestRunShard(t *testing.T) {
 	b2.Describe("c", func() { b2.It("C", func(*Context) { order = append(order, "C") }) })
 	b2.Describe("d", func() { b2.It("D", func(*Context) { order = append(order, "D") }) })
 	prog2 := b2.Build()
-	if len(prog2.Groups) != 4 {
-		t.Fatalf("expected 4 groups; got %d", len(prog2.Groups))
+	if prog2.NumGroups() != 4 {
+		t.Fatalf("expected 4 groups; got %d", prog2.NumGroups())
 	}
 	RunShard(prog2, t, 0, 2)
 	want := []string{"A", "C"}
