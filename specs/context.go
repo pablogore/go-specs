@@ -134,6 +134,10 @@ type expectT[T comparable] struct{ e *Expectation }
 // EqualTo asserts that actual equals expected. Zero alloc; single comparison, no type switch, no reflection.
 // Helper() is only called on failure so the fast path avoids runtime.Callers().
 //
+// Compares with Go's == (never reflect.DeepEqual): for a struct holding a pointer field, that
+// compares the pointer value itself, not the pointed-to value — unlike ctx.Expect(x).ToEqual(y)'s
+// reflect fallback for non-primitive types. See "Equality semantics" in docs/DSL.md.
+//
 // Example: specs.EqualTo(ctx, 42, 42) or specs.EqualTo(ctx, "got", "got")
 func EqualTo[T comparable](c *Context, actual, expected T) {
 	if c == nil || c.backend == nil {
@@ -153,6 +157,8 @@ func EqualTo[T comparable](c *Context, actual, expected T) {
 // ExpectT returns a typed expectation for comparable types. Zero allocations (reuses pooled Expectation).
 // ToEqual(expected) does one type assertion and direct comparison; inlineable.
 //
+// Same == comparison as EqualTo (see its doc comment) — not reflect.DeepEqual.
+//
 // Example: specs.ExpectT(ctx, 42).ToEqual(42) or specs.ExpectT(ctx, true).To(specs.BeTrue())
 func ExpectT[T comparable](c *Context, v T) expectT[T] {
 	e := expectationPool.Get().(*Expectation)
@@ -161,7 +167,8 @@ func ExpectT[T comparable](c *Context, v T) expectT[T] {
 	return expectT[T]{e: e}
 }
 
-// ToEqual asserts that the value equals expected. No reflection; inlineable. Helper() only on failure.
+// ToEqual asserts that the value equals expected using ==, not reflect.DeepEqual (see ExpectT's doc
+// comment). No reflection; inlineable. Helper() only on failure.
 func (x expectT[T]) ToEqual(expected T) {
 	e := x.e
 	if e == nil {
@@ -263,6 +270,12 @@ func (e *Expectation) To(m Matcher) {
 }
 
 // ToEqual asserts that the actual value equals expected (fast path for benchmarks). Helper() only on failure.
+//
+// Unlike EqualTo/ExpectT.ToEqual (which always use ==), this uses == only for a fast-path set of
+// primitive types (int, string, bool, int64, float64, uint) and falls back to reflect.DeepEqual for
+// everything else — including other primitives like int32/float32/uint64, and any struct, slice, or
+// map. That makes this the right choice when you need value-based equality for non-primitive types;
+// see "Equality semantics" in docs/DSL.md for why this differs from EqualTo/ExpectT.
 func (e *Expectation) ToEqual(expected any) {
 	if e == nil {
 		return
@@ -431,4 +444,3 @@ func runAfterHooks(ctx *Context, fixtures []Fixture) {
 		}
 	}
 }
-
