@@ -1,6 +1,35 @@
 package specs
 
-import "testing"
+import (
+	"fmt"
+	"strings"
+	"sync"
+	"testing"
+)
+
+// capturingBackend is a minimal testBackend that records failures instead of calling a real
+// *testing.T, so Fatalf does not exit the calling goroutine (unlike testing.T.FailNow). Used to
+// assert on parallelStep's failure reporting without Go's subtest failure automatically
+// propagating to (and failing) the enclosing test.
+type capturingBackend struct {
+	failed  bool
+	message string
+}
+
+func (b *capturingBackend) Helper()           {}
+func (b *capturingBackend) FailNow()          { b.failed = true }
+func (b *capturingBackend) Fatal(args ...any) { b.failed = true; b.message = fmt.Sprint(args...) }
+func (b *capturingBackend) Fatalf(format string, args ...any) {
+	b.failed = true
+	b.message = fmt.Sprintf(format, args...)
+}
+func (b *capturingBackend) Error(args ...any)                 { b.Fatal(args...) }
+func (b *capturingBackend) Errorf(format string, args ...any) { b.Fatalf(format, args...) }
+func (b *capturingBackend) Log(args ...any)                   {}
+func (b *capturingBackend) Logf(string, ...any)               {}
+func (b *capturingBackend) Name() string                      { return "" }
+func (b *capturingBackend) Cleanup(func())                    {}
+func (b *capturingBackend) Run(string, func(testing.TB))      {}
 
 func TestProgram_DescribeBeforeEachIt(t *testing.T) {
 	var order []string
@@ -164,14 +193,160 @@ func TestProgram_FocusFiltering(t *testing.T) {
 	}
 }
 
+// TestParallelStep_PanicRecovered verifies that a panicking ItParallel spec body (e.g. one that
+// dereferences the nil ctx.T instead of using ctx.Expect(...)) is recovered inside parallelStep
+// and reported as an ordinary spec failure via the subtest, instead of crashing the process.
+func TestParallelStep_PanicRecovered(t *testing.T) {
+	backend := &capturingBackend{}
+	ctx := &Context{backend: backend}
+	run := parallelStep([]step{
+		runAll([]step{func(*Context) { panic("boom") }}),
+	})
+	run(ctx) // must return normally; an unrecovered panic here would crash the whole test binary
+	if !backend.failed {
+		t.Error("expected the panic to be reported as a spec failure")
+	}
+	if !strings.Contains(backend.message, "panic: boom") {
+		t.Errorf("expected failure message to mention the panic, got %q", backend.message)
+	}
+}
+
+// TestParallelStep_FatalAssertionStopsSpecBody verifies a fatal assertion inside an ItParallel
+// body stops the rest of that spec, same as a sequential It — code after a failing
+// ctx.Expect(...).ToEqual(...) must not run. Before abortOnFatal, parallelBackend.Fatalf recorded
+// the failure but returned normally, silently turning a fatal assertion into a non-fatal one
+// inside ItParallel (unlike the sequential runner, where testing.T.FailNow's runtime.Goexit always
+// stops the current spec).
+func TestParallelStep_FatalAssertionStopsSpecBody(t *testing.T) {
+	backend := &capturingBackend{}
+	ctx := &Context{backend: backend}
+	var ranAfterFailure bool
+	run := parallelStep([]step{
+		runAll([]step{func(ctx *Context) {
+			ctx.Expect(1).ToEqual(2)
+			ranAfterFailure = true // must not run: the assertion above is fatal
+		}}),
+	})
+	run(ctx)
+	if !backend.failed {
+		t.Fatal("expected a failure to be reported")
+	}
+	if !strings.Contains(backend.message, "expected 1 to equal 2") {
+		t.Errorf("expected the assertion failure message, got %q", backend.message)
+	}
+	if ranAfterFailure {
+		t.Error("expected code after the fatal assertion to be skipped, but it ran")
+	}
+}
+
+// TestParallelStep_FatalAssertionSkipsRemainingSteps verifies that a fatal assertion in the middle
+// of an ItParallel spec's compiled step sequence (before/fn/after, baked into runAll by the
+// builder) also skips the steps that were supposed to run after it — matching what
+// testing.T.FailNow would do in the sequential runner (Goexit unwinds the rest of that spec's call
+// chain, including any AfterEach steps baked into the same sequence).
+func TestParallelStep_FatalAssertionSkipsRemainingSteps(t *testing.T) {
+	backend := &capturingBackend{}
+	ctx := &Context{backend: backend}
+	var afterRan bool
+	run := parallelStep([]step{
+		runAll([]step{
+			func(ctx *Context) { ctx.Expect(1).ToEqual(2) }, // the spec body, fails fatally
+			func(*Context) { afterRan = true },              // stands in for a baked-in AfterEach
+		}),
+	})
+	run(ctx)
+	if !backend.failed {
+		t.Fatal("expected a failure to be reported")
+	}
+	if afterRan {
+		t.Error("expected the step after the fatal assertion to be skipped, but it ran")
+	}
+}
+
+// TestParallelStep_NonFatalErrorDoesNotAbort verifies Error/Errorf (unlike Fatal/Fatalf/FailNow)
+// do not abort the spec, matching testing.T.Error's semantics, and that a genuine panic occurring
+// afterward is still reported without losing the earlier non-fatal message's informativeness — it
+// only needs to report *a* failure, so a later panic overwriting a merely-logged (not fatal) error
+// is acceptable, unlike overwriting an actual fatal reason.
+func TestParallelStep_NonFatalErrorDoesNotAbort(t *testing.T) {
+	backend := &capturingBackend{}
+	ctx := &Context{backend: backend}
+	var ranAfterError bool
+	run := parallelStep([]step{
+		runAll([]step{func(ctx *Context) {
+			ctx.backend.Error("logged, non-fatal")
+			ranAfterError = true
+		}}),
+	})
+	run(ctx)
+	if !ranAfterError {
+		t.Error("expected code after a non-fatal Error to still run")
+	}
+	if !backend.failed {
+		t.Fatal("expected the non-fatal error to still be reported as a failure")
+	}
+}
+
+// TestParallelStep_FailFastRunsAllSpecsInGroup verifies that every spec in an ItParallel group
+// runs to completion even when one of them fails fatally — a parallel group cannot be cancelled
+// mid-flight by a sibling's failure. FailFast only takes effect once parallelStep returns, at the
+// next group boundary in Runner.Run, since the whole parallel group compiles into one opaque step.
+func TestParallelStep_FailFastRunsAllSpecsInGroup(t *testing.T) {
+	var mu sync.Mutex
+	ran := map[string]bool{}
+	mark := func(name string) {
+		mu.Lock()
+		ran[name] = true
+		mu.Unlock()
+	}
+
+	backend := &capturingBackend{}
+	ctx := &Context{backend: backend}
+	ctx.SetFailFast(true) // as Runner.Run would set before running groups
+	run := parallelStep([]step{
+		runAll([]step{func(ctx *Context) {
+			mark("fails")
+			ctx.Expect(1).ToEqual(2)
+		}}),
+		runAll([]step{func(*Context) { mark("sibling") }}),
+	})
+	run(ctx)
+
+	if !ran["fails"] || !ran["sibling"] {
+		t.Errorf("expected both parallel specs to run despite FailFast, got %v", ran)
+	}
+	if !backend.failed {
+		t.Error("expected the group's failure to still be reported")
+	}
+}
+
+// TestParallelStep_NilCtxT verifies ctx.T is nil inside an ItParallel body: it cannot safely
+// expose the shared *testing.T (that would reintroduce the race being fixed), so ItParallel specs
+// must use ctx.Expect(...) rather than ctx.T directly.
+func TestParallelStep_NilCtxT(t *testing.T) {
+	var sawNilT bool
+	run := parallelStep([]step{
+		runAll([]step{func(ctx *Context) { sawNilT = ctx.T == nil }}),
+	})
+	run(NewContext(t))
+	if !sawNilT {
+		t.Error("expected ctx.T to be nil inside an ItParallel body")
+	}
+}
+
 func TestProgram_ParallelGrouping(t *testing.T) {
-	t.Skip("skipped under -race: parallel specs share Context and test appends to shared slice")
+	var mu sync.Mutex
 	var order []string
+	appendOrder := func(s string) {
+		mu.Lock()
+		order = append(order, s)
+		mu.Unlock()
+	}
 	b := NewBuilder()
-	b.It("A", func(*Context) { order = append(order, "A") })
-	b.ItParallel("B", func(*Context) { order = append(order, "B") })
-	b.ItParallel("C", func(*Context) { order = append(order, "C") })
-	b.It("D", func(*Context) { order = append(order, "D") })
+	b.It("A", func(*Context) { appendOrder("A") })
+	b.ItParallel("B", func(*Context) { appendOrder("B") })
+	b.ItParallel("C", func(*Context) { appendOrder("C") })
+	b.It("D", func(*Context) { appendOrder("D") })
 	prog := b.Build()
 	if len(prog.Groups) != 3 {
 		t.Fatalf("expected 3 groups (A, parallel B+C, D); got %d", len(prog.Groups))
@@ -281,11 +456,16 @@ func TestFocusWrapper(t *testing.T) {
 
 // TestParallelGroupExecution: consecutive ItParallel specs are compiled into a single parallel step.
 func TestParallelGroupExecution(t *testing.T) {
-	t.Skip("skipped under -race: parallel specs share Context and test appends to shared slice")
+	var mu sync.Mutex
 	var order []string
+	appendOrder := func(s string) {
+		mu.Lock()
+		order = append(order, s)
+		mu.Unlock()
+	}
 	b := NewBuilder()
-	b.ItParallel("B", func(*Context) { order = append(order, "B") })
-	b.ItParallel("C", func(*Context) { order = append(order, "C") })
+	b.ItParallel("B", func(*Context) { appendOrder("B") })
+	b.ItParallel("C", func(*Context) { appendOrder("C") })
 	prog := b.Build()
 	if len(prog.Groups) != 1 || len(prog.Groups[0].specs) != 1 {
 		t.Fatalf("expected 1 group with 1 step (parallel B,C); got %d groups, %d specs", len(prog.Groups), len(prog.Groups[0].specs))
@@ -303,13 +483,18 @@ func TestParallelGroupExecution(t *testing.T) {
 
 // TestParallelMixedWithSequential: It, ItParallel, ItParallel, It compiles to [A], [parallel(B,C)], [D].
 func TestParallelMixedWithSequential(t *testing.T) {
-	t.Skip("skipped under -race: parallel specs share Context and test appends to shared slice")
+	var mu sync.Mutex
 	var order []string
+	appendOrder := func(s string) {
+		mu.Lock()
+		order = append(order, s)
+		mu.Unlock()
+	}
 	b := NewBuilder()
-	b.It("A", func(*Context) { order = append(order, "A") })
-	b.ItParallel("B", func(*Context) { order = append(order, "B") })
-	b.ItParallel("C", func(*Context) { order = append(order, "C") })
-	b.It("D", func(*Context) { order = append(order, "D") })
+	b.It("A", func(*Context) { appendOrder("A") })
+	b.ItParallel("B", func(*Context) { appendOrder("B") })
+	b.ItParallel("C", func(*Context) { appendOrder("C") })
+	b.It("D", func(*Context) { appendOrder("D") })
 	prog := b.Build()
 	if len(prog.Groups) != 3 {
 		t.Fatalf("expected 3 groups (A, parallel B+C, D); got %d", len(prog.Groups))
@@ -387,13 +572,18 @@ func TestSkipRemoval(t *testing.T) {
 
 // TestParallelExecution verifies that ItParallel specs are grouped into one parallel step.
 func TestParallelExecution(t *testing.T) {
-	t.Skip("skipped under -race: parallel specs share Context and test appends to shared slice")
+	var mu sync.Mutex
 	var order []string
+	appendOrder := func(s string) {
+		mu.Lock()
+		order = append(order, s)
+		mu.Unlock()
+	}
 	b := NewBuilder()
-	b.It("A", func(*Context) { order = append(order, "A") })
-	b.ItParallel("B", func(*Context) { order = append(order, "B") })
-	b.ItParallel("C", func(*Context) { order = append(order, "C") })
-	b.It("D", func(*Context) { order = append(order, "D") })
+	b.It("A", func(*Context) { appendOrder("A") })
+	b.ItParallel("B", func(*Context) { appendOrder("B") })
+	b.ItParallel("C", func(*Context) { appendOrder("C") })
+	b.It("D", func(*Context) { appendOrder("D") })
 	prog := b.Build()
 	if len(prog.Groups) != 3 {
 		t.Fatalf("expected 3 groups (A, parallel B+C, D); got %d", len(prog.Groups))

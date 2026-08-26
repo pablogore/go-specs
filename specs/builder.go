@@ -33,7 +33,7 @@ type specMeta struct {
 type specItem struct {
 	kind    specKind
 	before  []step
-	spec    step   // single spec body; nil for skip
+	spec    step // single spec body; nil for skip
 	after   []step
 	steps   []step // full sequence only for kindParallel (before+fn+after flattened)
 	hookKey string // from b.hookKey() for coalescing without comparing funcs
@@ -185,6 +185,11 @@ func (b *Builder) FIt(name string, fn func(*Context)) {
 }
 
 // ItParallel registers a spec to run in parallel with adjacent ItParallel specs; grouped into one step at build time.
+// fn runs on its own *Context; ctx.T is nil (exposing the shared *testing.T would not be safe for
+// concurrent use), so use ctx.Expect(...) rather than ctx.T directly. A fatal assertion still stops
+// the rest of fn, same as a sequential It — it just stops that one goroutine instead of the process.
+// Every ItParallel spec in the group always runs to completion; FailFast only takes effect at the
+// next group, it cannot cancel a sibling ItParallel spec mid-group.
 func (b *Builder) ItParallel(name string, fn func(*Context)) {
 	if fn == nil {
 		return
@@ -278,4 +283,3 @@ func (b *Builder) AddAfter(fn func(*Context)) {
 func (b *Builder) AddSpec(fn func(*Context)) {
 	b.It("", fn)
 }
-

@@ -12,11 +12,23 @@ import (
 	"testing"
 )
 
+// parallelAbort is the sentinel panic value FailNow/Fatal/Fatalf use, when abortOnFatal is set, to
+// unwind just the current spec body — mirroring testing.T.FailNow's runtime.Goexit without ever
+// touching a live *testing.T from the wrong goroutine. The recovering caller must distinguish this
+// from a genuine panic (see parallelStep in program.go).
+type parallelAbort struct{}
+
 // parallelBackend implements testBackend by recording failures to results[specIndex].
 // One per worker; worker sets specIndex before running each spec. No reflection, no boxing.
 type parallelBackend struct {
 	specIndex int
 	results   *[]string
+	// abortOnFatal, when true, makes FailNow/Fatal/Fatalf panic(parallelAbort{}) after recording,
+	// so a fatal assertion stops the rest of the spec body — matching testing.T.FailNow's abort
+	// semantics. RunParallel's worker pool (runWorker/runWorkerBatched) leaves this false: a fatal
+	// assertion there records the failure but does not stop the spec (existing behavior, tracked
+	// separately). parallelStep (ItParallel, program.go) sets it true.
+	abortOnFatal bool
 }
 
 func (p *parallelBackend) Helper() {}
@@ -25,11 +37,17 @@ func (p *parallelBackend) FailNow() {
 	if p.results != nil && p.specIndex >= 0 && p.specIndex < len(*p.results) {
 		(*p.results)[p.specIndex] = "fail now"
 	}
+	if p.abortOnFatal {
+		panic(parallelAbort{})
+	}
 }
 
 func (p *parallelBackend) Fatal(args ...any) {
 	if p.results != nil && p.specIndex >= 0 && p.specIndex < len(*p.results) {
 		(*p.results)[p.specIndex] = fmt.Sprint(args...)
+	}
+	if p.abortOnFatal {
+		panic(parallelAbort{})
 	}
 }
 
@@ -37,17 +55,26 @@ func (p *parallelBackend) Fatalf(format string, args ...any) {
 	if p.results != nil && p.specIndex >= 0 && p.specIndex < len(*p.results) {
 		(*p.results)[p.specIndex] = fmt.Sprintf(format, args...)
 	}
+	if p.abortOnFatal {
+		panic(parallelAbort{})
+	}
 }
 
+// Error/Errorf never abort, matching testing.T.Error's semantics (unlike Fatal/Fatalf/FailNow
+// above, they record the failure but must not panic even when abortOnFatal is set).
 func (p *parallelBackend) Error(args ...any) {
-	p.Fatal(args...)
+	if p.results != nil && p.specIndex >= 0 && p.specIndex < len(*p.results) {
+		(*p.results)[p.specIndex] = fmt.Sprint(args...)
+	}
 }
 
 func (p *parallelBackend) Errorf(format string, args ...any) {
-	p.Fatalf(format, args...)
+	if p.results != nil && p.specIndex >= 0 && p.specIndex < len(*p.results) {
+		(*p.results)[p.specIndex] = fmt.Sprintf(format, args...)
+	}
 }
 
-func (p *parallelBackend) Log(args ...any)   {}
+func (p *parallelBackend) Log(args ...any)     {}
 func (p *parallelBackend) Logf(string, ...any) {}
 
 func (p *parallelBackend) Name() string { return "" }
