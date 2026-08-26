@@ -128,9 +128,13 @@ func reportFailures(tb failureReporter, results []string) {
 	}
 }
 
-// RunShard runs a shard of the compiled Program for CI. Group indices are assigned to shards
-// by gi % shardCount == shardIndex. shardCount must be > 0 and 0 <= shardIndex < shardCount.
-// Allocation happens once to build the shard's Program; the runner loop is allocation-free.
+// RunShard runs a shard of the compiled Program for CI. Sharding operates on already-coalesced
+// hook groups (specs sharing a BeforeEach/AfterEach are compiled into one group), not individual
+// specs: group indices are assigned to shards by gi % shardCount == shardIndex. A suite with many
+// specs under one shared hook lands its whole group on a single shard, so shard runtimes can be
+// uneven when hook groups are large or unevenly sized. shardCount must be > 0 and
+// 0 <= shardIndex < shardCount. Allocation happens once to build the shard's Program; the runner
+// loop is allocation-free.
 func RunShard(program *Program, tb testing.TB, shardIndex, shardCount int) {
 	if program == nil || tb == nil {
 		return
