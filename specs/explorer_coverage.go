@@ -3,7 +3,13 @@ package specs
 // CoverageExplorer learns from execution-path coverage (branch sampling via assertions).
 // seenCoverageHashes is maintained in the Coverage bitmap; when Feedback reports new edges,
 // the input is stored in the corpus. NextInput returns random input when corpus is empty,
-// otherwise a mutation of a random corpus entry (Mutator: +1, -1, bit flip, swap, boundary).
+// otherwise a mutation of a random corpus entry via Mutator.Mutate: +1/-1/×2/÷2/bit-flip/nearby
+// for a ranged int or int64 dimension (see Mutator.MutateInt); other dimensions (bool, discrete,
+// unranged int) are left unchanged — see Mutator.Mutate's doc comment and #9's follow-up issue.
+//
+// This is a different mutation strategy from the one PathSpec.Explore(n) uses (PathGenerator's own
+// unexported mutate, which does mutate bool/discrete dimensions) — see Mutator.Mutate's doc comment
+// for why the two exist and aren't meant to be interchangeable.
 type CoverageExplorer struct {
 	corpus   *Corpus
 	mutator  *Mutator
