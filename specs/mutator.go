@@ -60,8 +60,17 @@ func (m *Mutator) MutateInt(v, min, max int) int {
 }
 
 // Mutate returns a clone of p with one random dimension mutated.
-// For int dimensions with a range, MutateInt is used and the result is clamped to generator bounds.
-// Other dimensions are left unchanged.
+// For int/int64 dimensions with a range, MutateInt is used and the result is clamped to generator
+// bounds. Other dimensions (bool, discrete values, unranged int/int64) are left unchanged — this
+// call can be a no-op if the randomly picked dimension isn't a ranged int/int64. See #9's follow-up
+// issue for tracking that gap.
+//
+// This is the mutation strategy behind PathSpec.ExploreCoverage/ExploreSmart (via CoverageExplorer/
+// SmartExplorer). PathSpec.Explore uses a different, unexported strategy (PathGenerator.mutate in
+// path_generator.go) that does mutate bool and discrete dimensions, at the cost of not sharing this
+// type's int-mutation operators (bit-flip, ×2/÷2, etc. — see MutateInt). The two aren't meant to be
+// interchangeable: each backs a distinct public exploration mode, evolved independently rather than
+// consolidated, per the discussion on #9.
 func (m *Mutator) Mutate(gen *PathGenerator, p PathValues) PathValues {
 	if m == nil || m.rng == nil || gen == nil {
 		return p.clone()
