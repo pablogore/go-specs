@@ -134,9 +134,9 @@ type expectT[T comparable] struct{ e *Expectation }
 // EqualTo asserts that actual equals expected. Zero alloc; single comparison, no type switch, no reflection.
 // Helper() is only called on failure so the fast path avoids runtime.Callers().
 //
-// Compares with Go's == (never reflect.DeepEqual): for a struct holding a pointer/interface field,
-// that compares identity, not the pointed-to value — unlike ctx.Expect(x).ToEqual(y)'s reflect
-// fallback for non-primitive types. See "Equality semantics" in docs/DSL.md.
+// Compares with Go's == (never reflect.DeepEqual): for a struct holding a pointer field, that
+// compares the pointer value itself, not the pointed-to value — unlike ctx.Expect(x).ToEqual(y)'s
+// reflect fallback for non-primitive types. See "Equality semantics" in docs/DSL.md.
 //
 // Example: specs.EqualTo(ctx, 42, 42) or specs.EqualTo(ctx, "got", "got")
 func EqualTo[T comparable](c *Context, actual, expected T) {
