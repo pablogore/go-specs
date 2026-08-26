@@ -54,11 +54,9 @@ Public import paths are unchanged for compatibility:
 - `github.com/pablogore/go-specs/gen/generators`
 - `github.com/pablogore/go-specs/snapshots`
 
-Internal and runner code live under the specs module and use:
+Internal code lives under the specs module and uses:
 
 - `github.com/pablogore/go-specs/specs/internal/registry`
-- `github.com/pablogore/go-specs/specs/internal/plan`
-- `github.com/pablogore/go-specs/specs/runner`
 
 ---
 
