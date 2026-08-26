@@ -26,12 +26,12 @@ type intRange struct {
 
 // PathSpec binds path variables to a spec for runtime generation.
 type PathSpec struct {
-	spec                    *Spec
-	vars                    []PathVar
-	filters                 []PathFilter
-	samples                 int
-	seed                    int64
-	hasSeed                 bool
+	spec                      *Spec
+	vars                      []PathVar
+	filters                   []PathFilter
+	samples                   int
+	seed                      int64
+	hasSeed                   bool
 	exploreIterations         int
 	exploreCoverageIterations int
 	exploreSmartIterations    int
@@ -146,10 +146,14 @@ func (ps *PathSpec) Explore(iterations int) *PathSpec {
 	return ps
 }
 
-// ExploreCoverage enables coverage-guided exploration: prioritizes inputs that produce new execution paths.
-// Uses a lightweight hash of branches (e.g. comparison outcomes in Expect/ToEqual); maintains a corpus
-// of inputs that discovered new coverage and mutates from the corpus (+1, -1, bit flip, boundary jumps).
-// When new coverage is found, logs "New coverage discovered at iteration N" with the input.
+// ExploreCoverage enables coverage-guided exploration mode via CoverageExplorer: NextInput mutates
+// from a corpus (via Mutator.Mutate — see its doc comment for exactly which mutations apply) once
+// the corpus is non-empty, falling back to fully random input until then.
+//
+// Corpus growth doesn't use real assertion-level branch coverage yet — that needs ctx.coverage
+// wired to the runner per iteration, which isn't done (see PathGenerator.runGuidedExploration's doc
+// comment). It uses a call-site-signature novelty heuristic as a proxy instead, so this is closer
+// to "mutation-based exploration with a corpus" than genuine coverage-guided fuzzing today.
 func (ps *PathSpec) ExploreCoverage(iterations int) *PathSpec {
 	if ps == nil {
 		return ps
@@ -161,7 +165,10 @@ func (ps *PathSpec) ExploreCoverage(iterations int) *PathSpec {
 	return ps
 }
 
-// ExploreSmart enables smart exploration: boundary values, random, coverage-guided mutation, corpus replay.
+// ExploreSmart enables smart exploration mode via SmartExplorer: a weighted mix of corpus mutation,
+// random input, boundary values, and corpus replay (see SmartExplorer.NextInput's doc comment for
+// the exact weights). Corpus growth uses the same signature-based novelty proxy as ExploreCoverage
+// — see its doc comment for why that isn't genuine coverage-guided selection yet.
 func (ps *PathSpec) ExploreSmart(iterations int) *PathSpec {
 	if ps == nil {
 		return ps
