@@ -21,6 +21,16 @@ const (
 	ExplorationGuided
 )
 
+// explorationStrategy selects which candidate-generation strategy runExploration uses in
+// ExplorationGuided mode. Set from which of .Explore/.ExploreCoverage/.ExploreSmart was called.
+type explorationStrategy int
+
+const (
+	strategyPlain    explorationStrategy = iota // PathGenerator.mutate; PathSpec.Explore
+	strategyCoverage                            // CoverageExplorer; PathSpec.ExploreCoverage
+	strategySmart                               // SmartExplorer; PathSpec.ExploreSmart
+)
+
 // PathGenerator produces deterministic path combinations.
 type PathGenerator struct {
 	vars                      []PathVar
@@ -36,6 +46,9 @@ type PathGenerator struct {
 	explorationSeed           int64
 	exploreCoverageIterations int
 	exploreSmartIterations    int
+	strategy                  explorationStrategy
+	coverageExplorer          *CoverageExplorer
+	smartExplorer             *SmartExplorer
 }
 
 type pathDimension struct {
@@ -106,9 +119,25 @@ func (g *PathGenerator) PathValuesWith(values map[string]any) PathValues {
 func newPathGenerator(vars []PathVar, filters []PathFilter, samples int, seed int64, hasSeed bool, exploreIterations int, exploreCoverageIterations int, exploreSmartIterations int) *PathGenerator {
 	cloned := append([]PathVar(nil), vars...)
 	mode := CartesianMode
-	if exploreIterations > 0 {
+	iterations := 0
+	strategy := strategyPlain
+	switch {
+	// Precedence when more than one is set on the same PathSpec (not the intended usage, but
+	// deterministic beats silently picking one arbitrarily): Explore, then ExploreCoverage, then
+	// ExploreSmart, then Sample.
+	case exploreIterations > 0:
 		mode = ExplorationGuided
-	} else if samples > 0 {
+		iterations = exploreIterations
+		strategy = strategyPlain
+	case exploreCoverageIterations > 0:
+		mode = ExplorationGuided
+		iterations = exploreCoverageIterations
+		strategy = strategyCoverage
+	case exploreSmartIterations > 0:
+		mode = ExplorationGuided
+		iterations = exploreSmartIterations
+		strategy = strategySmart
+	case samples > 0:
 		mode = SamplingMode
 	}
 	if mode == SamplingMode {
@@ -166,6 +195,14 @@ func newPathGenerator(vars []PathVar, filters []PathFilter, samples int, seed in
 	if mode == ExplorationGuided {
 		seenSigs = make(map[uint64]struct{})
 	}
+	var coverageExplorer *CoverageExplorer
+	var smartExplorer *SmartExplorer
+	switch strategy {
+	case strategyCoverage:
+		coverageExplorer = NewCoverageExplorer(explorationSeed)
+	case strategySmart:
+		smartExplorer = NewSmartExplorer(explorationSeed)
+	}
 	return &PathGenerator{
 		vars:                      cloned,
 		filters:                   append([]PathFilter(nil), filters...),
@@ -173,12 +210,15 @@ func newPathGenerator(vars []PathVar, filters []PathFilter, samples int, seed in
 		dims:                      dims,
 		mode:                      mode,
 		samples:                   samples,
-		iterations:                exploreIterations,
+		iterations:                iterations,
 		rng:                       rng,
 		seenSigs:                  seenSigs,
 		explorationSeed:           explorationSeed,
 		exploreCoverageIterations: exploreCoverageIterations,
 		exploreSmartIterations:    exploreSmartIterations,
+		strategy:                  strategy,
+		coverageExplorer:          coverageExplorer,
+		smartExplorer:             smartExplorer,
 	}
 }
 
@@ -344,10 +384,55 @@ func (g *PathGenerator) runSamples(fn func(PathValues)) {
 	}
 }
 
+// runExploration dispatches to the candidate-generation strategy selected by .Explore
+// (strategyPlain, this generator's own mutate), .ExploreCoverage (strategyCoverage,
+// CoverageExplorer), or .ExploreSmart (strategySmart, SmartExplorer) — whichever of those was
+// called on the PathSpec (see newPathGenerator).
 func (g *PathGenerator) runExploration(fn func(PathValues)) {
 	if g.iterations <= 0 || g.rng == nil {
 		return
 	}
+	switch g.strategy {
+	case strategyCoverage:
+		g.runGuidedExploration(fn, g.coverageExplorer.NextInput, g.coverageExplorer.corpus)
+	case strategySmart:
+		g.runGuidedExploration(fn, g.smartExplorer.NextInput, g.smartExplorer.corpus)
+	default:
+		g.runPlainExploration(fn)
+	}
+}
+
+// runGuidedExploration drives CoverageExplorer/SmartExplorer for candidate generation.
+//
+// Real coverage-guided corpus growth needs ctx.coverage populated with genuine assertion-level
+// edge data on every iteration, which requires wiring the runner to set it per path iteration —
+// not yet done (tracked separately; PathGenerator.ForEach itself isn't invoked by the top-level
+// Describe execution path today either, a larger pre-existing gap — see the 8 tests skipped
+// "paths combinatorial execution with top-level Describe deferred to post-v1.0.0" in
+// paths_test.go). Until real coverage feedback exists, corpus growth uses the same call-site-
+// signature novelty heuristic the plain strategy already uses (captureSignature) as an honest,
+// documented proxy — good enough to give NextInput something to mutate from instead of always
+// falling back to fully random input, but not genuine coverage-guided selection.
+func (g *PathGenerator) runGuidedExploration(fn func(PathValues), nextInput func(*PathGenerator) PathValues, corpus *Corpus) {
+	executed := 0
+	for executed < g.iterations {
+		candidate := nextInput(g)
+		if !g.allow(candidate) {
+			continue
+		}
+		if fn != nil {
+			fn(candidate)
+		}
+		executed++
+		sig := captureSignature()
+		if _, seen := g.seenSigs[sig]; !seen {
+			g.seenSigs[sig] = struct{}{}
+			corpus.Add(candidate)
+		}
+	}
+}
+
+func (g *PathGenerator) runPlainExploration(fn func(PathValues)) {
 	pv := PathValues{
 		values:  make([]any, len(g.index)),
 		present: make([]bool, len(g.index)),
