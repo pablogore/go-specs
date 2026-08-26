@@ -4,9 +4,9 @@ package specs
 // reachable mutation strategies for property-based exploration (see #9, and the doc comments on
 // Mutator.Mutate and PathGenerator.mutate): Mutator.Mutate (used by PathSpec.ExploreCoverage/
 // ExploreSmart) is a no-op for a bool dimension, while PathGenerator.mutate (used by
-// PathSpec.Explore) always mutates something — for bool, it negates. With a single bool dimension,
-// the dimension pick is deterministic (there's nothing else to pick), so this needs no seeding
-// tricks to be reliable.
+// PathSpec.Explore) unconditionally negates a bool dimension. With a single bool dimension, the
+// dimension pick is deterministic (there's nothing else to pick), so this needs no seeding tricks
+// to be reliable.
 
 import "testing"
 

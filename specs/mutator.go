@@ -67,10 +67,11 @@ func (m *Mutator) MutateInt(v, min, max int) int {
 //
 // This is the mutation strategy behind PathSpec.ExploreCoverage/ExploreSmart (via CoverageExplorer/
 // SmartExplorer). PathSpec.Explore uses a different, unexported strategy (PathGenerator.mutate in
-// path_generator.go) that does mutate bool and discrete dimensions, at the cost of not sharing this
-// type's int-mutation operators (bit-flip, ×2/÷2, etc. — see MutateInt). The two aren't meant to be
-// interchangeable: each backs a distinct public exploration mode, evolved independently rather than
-// consolidated, per the discussion on #9.
+// path_generator.go) that has an explicit mutation path for bool and discrete dimensions too (bool
+// is always flipped; a discrete re-pick may coincidentally land on the same value), at the cost of
+// not sharing this type's int-mutation operators (bit-flip, ×2/÷2, etc. — see MutateInt). The two
+// aren't meant to be interchangeable: each backs a distinct public exploration mode, evolved
+// independently rather than consolidated, per the discussion on #9.
 func (m *Mutator) Mutate(gen *PathGenerator, p PathValues) PathValues {
 	if m == nil || m.rng == nil || gen == nil {
 		return p.clone()

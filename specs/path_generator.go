@@ -410,8 +410,12 @@ func (g *PathGenerator) RandomInput(rng *rand.Rand) PathValues {
 
 // mutate returns a clone of input with one random dimension mutated: int gets +1/-1/mid-range (if
 // ranged)/a random discrete value/full re-randomization, bool gets negated, and any other type is
-// fully re-randomized via dim.randomValue. Unlike Mutator.Mutate (mutator.go), no dimension is ever
-// left unchanged — but it also lacks Mutator's richer int operators (bit-flip, ×2/÷2, clamping).
+// fully re-randomized via dim.randomValue. Unlike Mutator.Mutate (mutator.go), every dimension type
+// has an explicit mutation path — bool and discrete values aren't left unsupported. That doesn't
+// guarantee the result differs from the input, though: the discrete-value and dim.randomValue paths
+// pick from the dimension's full value set without excluding the current value, so re-picking the
+// same value by chance is possible (unlike, say, bool's unconditional negation). It also lacks
+// Mutator's richer int operators (bit-flip, ×2/÷2, clamping).
 //
 // This is PathSpec.Explore's mutation strategy (via runExploration below); ExploreCoverage/
 // ExploreSmart use Mutator.Mutate instead. See Mutator.Mutate's doc comment and #9 for why these
