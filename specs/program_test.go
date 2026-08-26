@@ -211,28 +211,112 @@ func TestParallelStep_PanicRecovered(t *testing.T) {
 	}
 }
 
-// TestParallelStep_AssertionFailureBeforePanicPreserved verifies that a panic occurring after an
-// assertion has already failed (parallelBackend.Fatalf does not stop execution, unlike
-// testing.T.FailNow) does not overwrite the more informative assertion failure message with the
-// generic panic message.
-func TestParallelStep_AssertionFailureBeforePanicPreserved(t *testing.T) {
+// TestParallelStep_FatalAssertionStopsSpecBody verifies a fatal assertion inside an ItParallel
+// body stops the rest of that spec, same as a sequential It — code after a failing
+// ctx.Expect(...).ToEqual(...) must not run. Before abortOnFatal, parallelBackend.Fatalf recorded
+// the failure but returned normally, silently turning a fatal assertion into a non-fatal one
+// inside ItParallel (unlike the sequential runner, where testing.T.FailNow's runtime.Goexit always
+// stops the current spec).
+func TestParallelStep_FatalAssertionStopsSpecBody(t *testing.T) {
 	backend := &capturingBackend{}
 	ctx := &Context{backend: backend}
+	var ranAfterFailure bool
 	run := parallelStep([]step{
 		runAll([]step{func(ctx *Context) {
 			ctx.Expect(1).ToEqual(2)
-			panic("boom")
+			ranAfterFailure = true // must not run: the assertion above is fatal
 		}}),
 	})
 	run(ctx)
 	if !backend.failed {
 		t.Fatal("expected a failure to be reported")
 	}
-	if strings.Contains(backend.message, "panic:") {
-		t.Errorf("expected the original assertion failure message to be preserved, got %q", backend.message)
-	}
 	if !strings.Contains(backend.message, "expected 1 to equal 2") {
 		t.Errorf("expected the assertion failure message, got %q", backend.message)
+	}
+	if ranAfterFailure {
+		t.Error("expected code after the fatal assertion to be skipped, but it ran")
+	}
+}
+
+// TestParallelStep_FatalAssertionSkipsRemainingSteps verifies that a fatal assertion in the middle
+// of an ItParallel spec's compiled step sequence (before/fn/after, baked into runAll by the
+// builder) also skips the steps that were supposed to run after it — matching what
+// testing.T.FailNow would do in the sequential runner (Goexit unwinds the rest of that spec's call
+// chain, including any AfterEach steps baked into the same sequence).
+func TestParallelStep_FatalAssertionSkipsRemainingSteps(t *testing.T) {
+	backend := &capturingBackend{}
+	ctx := &Context{backend: backend}
+	var afterRan bool
+	run := parallelStep([]step{
+		runAll([]step{
+			func(ctx *Context) { ctx.Expect(1).ToEqual(2) }, // the spec body, fails fatally
+			func(*Context) { afterRan = true },              // stands in for a baked-in AfterEach
+		}),
+	})
+	run(ctx)
+	if !backend.failed {
+		t.Fatal("expected a failure to be reported")
+	}
+	if afterRan {
+		t.Error("expected the step after the fatal assertion to be skipped, but it ran")
+	}
+}
+
+// TestParallelStep_NonFatalErrorDoesNotAbort verifies Error/Errorf (unlike Fatal/Fatalf/FailNow)
+// do not abort the spec, matching testing.T.Error's semantics, and that a genuine panic occurring
+// afterward is still reported without losing the earlier non-fatal message's informativeness — it
+// only needs to report *a* failure, so a later panic overwriting a merely-logged (not fatal) error
+// is acceptable, unlike overwriting an actual fatal reason.
+func TestParallelStep_NonFatalErrorDoesNotAbort(t *testing.T) {
+	backend := &capturingBackend{}
+	ctx := &Context{backend: backend}
+	var ranAfterError bool
+	run := parallelStep([]step{
+		runAll([]step{func(ctx *Context) {
+			ctx.backend.Error("logged, non-fatal")
+			ranAfterError = true
+		}}),
+	})
+	run(ctx)
+	if !ranAfterError {
+		t.Error("expected code after a non-fatal Error to still run")
+	}
+	if !backend.failed {
+		t.Fatal("expected the non-fatal error to still be reported as a failure")
+	}
+}
+
+// TestParallelStep_FailFastRunsAllSpecsInGroup verifies that every spec in an ItParallel group
+// runs to completion even when one of them fails fatally — a parallel group cannot be cancelled
+// mid-flight by a sibling's failure. FailFast only takes effect once parallelStep returns, at the
+// next group boundary in Runner.Run, since the whole parallel group compiles into one opaque step.
+func TestParallelStep_FailFastRunsAllSpecsInGroup(t *testing.T) {
+	var mu sync.Mutex
+	ran := map[string]bool{}
+	mark := func(name string) {
+		mu.Lock()
+		ran[name] = true
+		mu.Unlock()
+	}
+
+	backend := &capturingBackend{}
+	ctx := &Context{backend: backend}
+	ctx.SetFailFast(true) // as Runner.Run would set before running groups
+	run := parallelStep([]step{
+		runAll([]step{func(ctx *Context) {
+			mark("fails")
+			ctx.Expect(1).ToEqual(2)
+		}}),
+		runAll([]step{func(*Context) { mark("sibling") }}),
+	})
+	run(ctx)
+
+	if !ran["fails"] || !ran["sibling"] {
+		t.Errorf("expected both parallel specs to run despite FailFast, got %v", ran)
+	}
+	if !backend.failed {
+		t.Error("expected the group's failure to still be reported")
 	}
 }
 

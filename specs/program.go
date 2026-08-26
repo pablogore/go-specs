@@ -41,17 +41,28 @@ func runAll(steps []step) step {
 // inside the step, not in the runner loop.
 //
 // Each goroutine runs its own *Context, pulled from contextPool and backed by a parallelBackend
-// (the same type RunParallel's worker pool uses), instead of sharing ctx: Context.failed and the
-// underlying *testing.T are not safe for concurrent access, and testing.T.FailNow (used by
-// Fatal/Fatalf) must only be called from the goroutine running the test. Once every goroutine has
-// finished, failures are replayed on ctx from the calling goroutine, so Fatalf/FailFast still
-// happen on the right goroutine.
+// (the same type RunParallel's worker pool uses) with abortOnFatal set, instead of sharing ctx:
+// Context.failed and the underlying *testing.T are not safe for concurrent access, and
+// testing.T.FailNow (used by Fatal/Fatalf) must only be called from the goroutine running the
+// test. Once every goroutine has finished, failures are replayed on ctx from the calling
+// goroutine, so Fatalf/FailFast still happen on the right goroutine.
+//
+// abortOnFatal makes a fatal assertion (Fatal/Fatalf/FailNow) panic(parallelAbort{}) after
+// recording, so — like the real testing.T.FailNow it replaces — it stops the rest of the current
+// spec's before/fn/after sequence (runAll) instead of silently continuing into code that assumed
+// the spec had already stopped. The deferred recover below treats that sentinel as an expected,
+// already-recorded stop, not a failure to report; any other panic (e.g. from the nil ctx.T below)
+// is recorded as an ordinary spec failure instead of crashing the process. Pool cleanup always
+// runs via defer, panic or not.
+//
+// A parallel group always runs every one of its specs to completion before this step returns
+// (wg.Wait() below) — FailFast only takes effect at the next group boundary in Runner.Run, since
+// the whole parallel group is compiled as a single opaque step; it cannot cancel sibling specs
+// mid-group. See TestParallelStep_FailFastRunsAllSpecsInGroup.
 //
 // parallelBackend cannot safely expose a live *testing.T (doing so would let a spec body call
 // t.Fatalf from the wrong goroutine, reintroducing the race this fixes), so child.T is nil inside
-// an ItParallel body; use ctx.Expect(...) instead of ctx.T directly. A spec that panics anyway
-// (e.g. by dereferencing the nil ctx.T) is recovered and reported as an ordinary spec failure
-// instead of crashing the process, and pool cleanup always runs via defer.
+// an ItParallel body; use ctx.Expect(...) instead of ctx.T directly.
 func parallelStep(steps []step) step {
 	return func(ctx *Context) {
 		if len(steps) == 0 {
@@ -65,16 +76,22 @@ func parallelStep(steps []step) step {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				backend := &parallelBackend{specIndex: i, results: &results}
+				backend := &parallelBackend{specIndex: i, results: &results, abortOnFatal: true}
 				child := contextPool.Get().(*Context)
 				child.Reset(backend)
 				child.SetPathValues(pathValues)
 				defer func() {
-					// Only record the panic if the spec hasn't already reported a more
-					// informative assertion failure (parallelBackend.Fatalf does not stop
-					// execution, so a spec can fail an assertion and then go on to panic).
-					if r := recover(); r != nil && results[i] == "" {
-						results[i] = fmt.Sprintf("panic: %v", r)
+					switch r := recover(); r {
+					case nil:
+						// spec ran to completion (or a Fatal/Fatalf/FailNow already returned
+						// normally via a different path — not reachable with abortOnFatal, kept
+						// for clarity).
+					case parallelAbort{}:
+						// expected stop: Fatal/Fatalf/FailNow already recorded results[i].
+					default:
+						if results[i] == "" {
+							results[i] = fmt.Sprintf("panic: %v", r)
+						}
 					}
 					child.Reset(nil)
 					contextPool.Put(child)

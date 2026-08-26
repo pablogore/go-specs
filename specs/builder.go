@@ -186,7 +186,10 @@ func (b *Builder) FIt(name string, fn func(*Context)) {
 
 // ItParallel registers a spec to run in parallel with adjacent ItParallel specs; grouped into one step at build time.
 // fn runs on its own *Context; ctx.T is nil (exposing the shared *testing.T would not be safe for
-// concurrent use), so use ctx.Expect(...) rather than ctx.T directly.
+// concurrent use), so use ctx.Expect(...) rather than ctx.T directly. A fatal assertion still stops
+// the rest of fn, same as a sequential It — it just stops that one goroutine instead of the process.
+// Every ItParallel spec in the group always runs to completion; FailFast only takes effect at the
+// next group, it cannot cancel a sibling ItParallel spec mid-group.
 func (b *Builder) ItParallel(name string, fn func(*Context)) {
 	if fn == nil {
 		return
