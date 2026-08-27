@@ -1,6 +1,7 @@
 package specs
 
 import (
+	"context"
 	"sync"
 	"testing"
 
@@ -17,12 +18,12 @@ type Spec struct {
 	hasSeed  bool
 
 	// Either (arena, rootID) when built via Analyze/registry, or plan when built via bytecode compiler.
-	arena   *NodeArena
-	rootID  int
-	plan    *ExecutionPlan // set by top-level Describe when using bytecode compiler (no arena)
-	flat    bool          // if true, run all specs in one test (no subtests)
+	arena       *NodeArena
+	rootID      int
+	plan        *ExecutionPlan // set by top-level Describe when using bytecode compiler (no arena)
+	flat        bool           // if true, run all specs in one test (no subtests)
 	compileOnce sync.Once
-	suite   *CompiledSuite
+	suite       *CompiledSuite
 }
 
 // Describe starts a top-level describe block. May be called inside Analyze(fn) or directly.
@@ -57,6 +58,10 @@ func Describe(tb testing.TB, name string, fn func(*Spec)) {
 
 // describeWithCompiler runs Describe using the bytecode compiler (no arena).
 func describeWithCompiler(tb testing.TB, name string, rep report.EventReporter, fn func(*Spec), flat bool) {
+	describeWithCompilerContext(tb, nil, name, rep, fn, flat)
+}
+
+func describeWithCompilerContext(tb testing.TB, runCtx context.Context, name string, rep report.EventReporter, fn func(*Spec), flat bool) []proposalControllerResult {
 	c := newBytecodeCompiler()
 	c.PushScope(name)
 	pushCompiler(c)
@@ -75,8 +80,9 @@ func describeWithCompiler(tb testing.TB, name string, rep report.EventReporter, 
 	s.plan = c.TakePlan()
 	if tb != nil {
 		s.Compile()
-		s.Run()
+		return s.suite.run(tb, runCtx)
 	}
+	return nil
 }
 
 // BuildSuite builds the spec tree and compiles it once; returns the CompiledSuite without running.

@@ -2,10 +2,12 @@
 package specs
 
 import (
+	"context"
 	"io"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/pablogore/go-specs/report"
 )
@@ -150,28 +152,78 @@ type CompiledSuite struct {
 
 // Run executes all specs in the plan. Uses one context from the pool per spec (or per path iteration).
 func (s *CompiledSuite) Run(tb testing.TB) {
+	s.run(tb, nil)
+}
+
+func (s *CompiledSuite) run(tb testing.TB, runCtx context.Context) []proposalControllerResult {
 	if s == nil || s.Plan == nil || tb == nil || len(s.Plan.ProgramStart) == 0 {
-		return
+		return nil
+	}
+	if runCtx == nil {
+		var cancel context.CancelFunc
+		runCtx, cancel = executionContext(tb)
+		defer cancel()
 	}
 	backend := asTestBackend(tb)
 	defer putTestBackend(backend)
 	rep := report.New(io.Discard)
-	runPlanFlatNoSubtests(backend, rep, s.Plan)
+	return runPlanFlatNoSubtests(runCtx, backend, rep, s.Plan)
 }
 
-func runPlanFlatNoSubtests(backend testBackend, rep *report.Reporter, plan *ExecutionPlan) {
-	for i := 0; i < len(plan.ProgramStart); i++ {
-		runExecution(backend, rep, plan, i)
+func executionContext(tb testing.TB) (context.Context, context.CancelFunc) {
+	ctx := context.Background()
+	if contextual, ok := tb.(interface{ Context() context.Context }); ok && contextual.Context() != nil {
+		ctx = contextual.Context()
 	}
+	if timed, ok := tb.(interface{ Deadline() (time.Time, bool) }); ok {
+		if deadline, ok := timed.Deadline(); ok {
+			return context.WithDeadline(ctx, deadline)
+		}
+	}
+	return context.WithCancel(ctx)
 }
 
-func runExecution(backend testBackend, rep *report.Reporter, plan *ExecutionPlan, i int) {
+func runPlanFlatNoSubtests(runCtx context.Context, backend testBackend, rep *report.Reporter, plan *ExecutionPlan) []proposalControllerResult {
+	results := make([]proposalControllerResult, 0, len(plan.ProgramStart))
+	for i := 0; i < len(plan.ProgramStart); i++ {
+		results = append(results, runExecutionContext(runCtx, backend, rep, plan, i))
+	}
+	return results
+}
+
+func runExecution(backend testBackend, rep *report.Reporter, plan *ExecutionPlan, i int) proposalControllerResult {
+	return runExecutionContext(context.Background(), backend, rep, plan, i)
+}
+
+func runExecutionContext(runCtx context.Context, backend testBackend, rep *report.Reporter, plan *ExecutionPlan, i int) proposalControllerResult {
 	start := plan.ProgramStart[i]
 	length := plan.ProgramLen[i]
 	if start+length > len(plan.Instructions) {
-		return
+		return proposalControllerResult{}
 	}
 	program := plan.Instructions[start : start+length]
+	if i < len(plan.PathGens) && plan.PathGens[i] != nil {
+		paths := make([]PathValues, 0)
+		plan.PathGens[i].ForEach(func(path PathValues) { paths = append(paths, path.clone()) })
+		next := 0
+		result := newProposalController(proposalControllerConfig{
+			MaxAttempts:   len(paths),
+			MaxAccepted:   len(paths),
+			MaxRejections: len(paths),
+			Propose: func() (PathValues, bool) {
+				if next == len(paths) {
+					return PathValues{}, false
+				}
+				path := paths[next]
+				next++
+				return path, true
+			},
+			Execute: func(candidate proposalCandidate) bool {
+				return !runIsolatedCase(backend, program, candidate.Values).Failed
+			},
+		}).Run(runCtx)
+		return result
+	}
 	ctx := contextPool.Get().(*Context)
 	defer func() {
 		ctx.Reset(nil)
@@ -180,6 +232,7 @@ func runExecution(backend testBackend, rep *report.Reporter, plan *ExecutionPlan
 	ctx.Reset(backend)
 	ctx.SetPathValues(PathValues{})
 	runProgram(program, ctx, nil)
+	return proposalControllerResult{}
 }
 
 func runProgram(program []Instruction, ctx *Context, path *PathValues) {
@@ -194,7 +247,7 @@ func runProgram(program []Instruction, ctx *Context, path *PathValues) {
 }
 
 // isolatedCaseAbort lets a controlled backend stop one isolated case without
-// terminating the parent test. Generated dispatch does not use this boundary yet.
+// terminating the parent test.
 type isolatedCaseAbort struct{}
 
 type isolatedCaseResult struct {
@@ -204,9 +257,22 @@ type isolatedCaseResult struct {
 	ContextReset bool
 }
 
-// runIsolatedCase proves the lifecycle required before generated dispatch can be enabled.
-// It is intentionally not called by runExecution until the later dispatch slice.
+// runIsolatedCase executes real generated cases in a subtest so Fatal and FailNow
+// terminate only that case while preserving the parent test's failure semantics.
 func runIsolatedCase(backend testBackend, program []Instruction, path PathValues) (result isolatedCaseResult) {
+	if real, ok := backend.(*runnableBackend); ok {
+		real.Run("generated", func(tb testing.TB) {
+			caseBackend := asTestBackend(tb)
+			defer putTestBackend(caseBackend)
+			defer func() { result.Failed = result.Failed || tb.Failed() }()
+			result = runIsolatedCaseDirect(caseBackend, program, path)
+		})
+		return result
+	}
+	return runIsolatedCaseDirect(backend, program, path)
+}
+
+func runIsolatedCaseDirect(backend testBackend, program []Instruction, path PathValues) (result isolatedCaseResult) {
 	ctx := contextPool.Get().(*Context)
 	ctx.Reset(backend)
 	ctx.SetPathValues(path)
