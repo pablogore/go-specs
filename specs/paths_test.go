@@ -57,7 +57,6 @@ func TestPathsAnalyzeKeepsSingleNode(t *testing.T) {
 }
 
 func TestPathsExecutesAllCombinations(t *testing.T) {
-	t.Skip("paths combinatorial execution with top-level Describe deferred to post-v1.0.0")
 	var hits []string
 	var mu sync.Mutex
 	Describe(t, "Paths", func(s *Spec) {
@@ -88,8 +87,21 @@ func TestPathsExecutesAllCombinations(t *testing.T) {
 	}
 }
 
+func TestPathsExecutesGeneratedCasesSequentiallyInDeclarationOrder(t *testing.T) {
+	var order []int
+	Describe(t, "PathsSequential", func(s *Spec) {
+		s.Paths(func(pb *PathBuilder) {
+			pb.Int("value", []int{1, 2, 3})
+		}).It("case", func(ctx *Context) {
+			order = append(order, ctx.Path().Int("value"))
+		})
+	})
+	if got, want := fmt.Sprint(order), "[1 2 3]"; got != want {
+		t.Fatalf("generated execution order = %s, want %s", got, want)
+	}
+}
+
 func TestPathsFiltersCombinations(t *testing.T) {
-	t.Skip("paths combinatorial execution with top-level Describe deferred to post-v1.0.0")
 	var hits []string
 	var mu sync.Mutex
 	Describe(t, "PathsFilter", func(s *Spec) {
@@ -125,8 +137,27 @@ func TestPathsFiltersCombinations(t *testing.T) {
 	}
 }
 
+func TestPathsCasesUseIsolatedHooksAndContext(t *testing.T) {
+	var order []string
+	Describe(t, "PathLifecycle", func(s *Spec) {
+		s.BeforeEach(func(ctx *Context) {
+			if ctx.Path().Int("value") == 0 {
+				t.Fatal("missing generated path value")
+			}
+			order = append(order, "before")
+		})
+		s.AfterEach(func(*Context) { order = append(order, "after") })
+		s.Paths(func(pb *PathBuilder) { pb.Int("value", []int{1, 2}) }).It("case", func(ctx *Context) {
+			order = append(order, fmt.Sprintf("body-%d", ctx.Path().Int("value")))
+		})
+	})
+	if got, want := fmt.Sprint(order), "[before body-1 after before body-2 after]"; got != want {
+		t.Fatalf("case lifecycle = %s, want %s", got, want)
+	}
+}
+
 func TestPathsReporterIncludesCombinationNames(t *testing.T) {
-	t.Skip("paths combinatorial execution with top-level Describe deferred to post-v1.0.0")
+	t.Skip("generated reporting is deferred until the later reporting gate")
 	var buf bytes.Buffer
 	reporter := report.New(&buf)
 	DescribeWithReporter(t, "Paths", reporter, func(s *Spec) {
@@ -148,7 +179,6 @@ func TestPathsReporterIncludesCombinationNames(t *testing.T) {
 }
 
 func TestPathsSampleExecutesRequestedCount(t *testing.T) {
-	t.Skip("paths combinatorial execution with top-level Describe deferred to post-v1.0.0")
 	const samples = 5
 	var mu sync.Mutex
 	var prices []int
@@ -203,7 +233,6 @@ func TestPathsSampleDeterministicWithSeed(t *testing.T) {
 }
 
 func TestPathsSampleRespectsFilters(t *testing.T) {
-	t.Skip("paths combinatorial execution with top-level Describe deferred to post-v1.0.0")
 	var mu sync.Mutex
 	var hits []int
 	Describe(t, "PathsSampleFilters", func(s *Spec) {
@@ -229,7 +258,7 @@ func TestPathsSampleRespectsFilters(t *testing.T) {
 }
 
 func TestPathsSampleReporterNamesIncludeSample(t *testing.T) {
-	t.Skip("paths combinatorial execution with top-level Describe deferred to post-v1.0.0")
+	t.Skip("generated reporting is deferred until the later reporting gate")
 	var buf bytes.Buffer
 	reporter := report.New(&buf)
 	DescribeWithReporter(t, "PathsSampleReporter", reporter, func(s *Spec) {
@@ -245,7 +274,6 @@ func TestPathsSampleReporterNamesIncludeSample(t *testing.T) {
 }
 
 func TestPathsExploreRunsExpectedIterations(t *testing.T) {
-	t.Skip("paths combinatorial execution with top-level Describe deferred to post-v1.0.0")
 	const iterations = 10
 	var mu sync.Mutex
 	var count int
@@ -294,7 +322,6 @@ func TestPathsExploreDeterministicWithSeed(t *testing.T) {
 }
 
 func TestPathsExploreRespectsFilters(t *testing.T) {
-	t.Skip("paths combinatorial execution with top-level Describe deferred to post-v1.0.0")
 	var mu sync.Mutex
 	var values []int
 	Describe(t, "PathsExploreFilters", func(s *Spec) {
@@ -448,7 +475,8 @@ func TestExploreCoverageRuns(t *testing.T) {
 			p.IntRange("x", 0, 100)
 			p.IntRange("y", 0, 100)
 		}).ExploreCoverage(20).It("property", func(ctx *Context) {
-			ctx.Expect(ctx.Path().Int("x") + ctx.Path().Int("y")).ToEqual(ctx.Path().Int("x") + ctx.Path().Int("y"))
+			x, y := ctx.Path().Int("x"), ctx.Path().Int("y")
+			ctx.Expect(x+y >= x && x+y >= y).ToEqual(true)
 		})
 	})
 }
@@ -459,7 +487,8 @@ func TestExploreSmartRuns(t *testing.T) {
 			p.IntRange("x", 0, 100)
 			p.IntRange("y", 0, 100)
 		}).ExploreSmart(25).It("property", func(ctx *Context) {
-			ctx.Expect(ctx.Path().Int("x") + ctx.Path().Int("y")).ToEqual(ctx.Path().Int("x") + ctx.Path().Int("y"))
+			x, y := ctx.Path().Int("x"), ctx.Path().Int("y")
+			ctx.Expect(x+y >= x && x+y >= y).ToEqual(true)
 		})
 	})
 }

@@ -1,8 +1,13 @@
 package specs
 
 import (
+	"context"
 	"fmt"
+	"os"
+	"os/exec"
+	"strings"
 	"testing"
+	"time"
 )
 
 type controlledBackend struct {
@@ -102,5 +107,112 @@ func TestOrdinaryItKeepsGoTestSemantics(t *testing.T) {
 	})
 	if got, want := fmt.Sprint(order), "[before body after]"; got != want {
 		t.Fatalf("ordinary It order = %s, want %s", got, want)
+	}
+}
+
+func TestRunExecutionStopsGeneratedCasesAtFirstFailure(t *testing.T) {
+	gen := newPathGenerator([]PathVar{{Name: "value", Values: []any{1, 2, 3}}}, nil, 0, 0, false, 0, 0, 0)
+	var seen []int
+	plan := &ExecutionPlan{
+		Instructions: []Instruction{{Code: OpBody, Fn: func(ctx *Context) {
+			value := ctx.Path().Int("value")
+			seen = append(seen, value)
+			if value == 2 {
+				ctx.Expect(false).ToEqual(true)
+			}
+		}}},
+		ProgramStart: []int{0}, ProgramLen: []int{1}, PathGens: []*PathGenerator{gen},
+	}
+	backend := &controlledBackend{}
+	result := runExecution(backend, nil, plan, 0)
+	if got, want := fmt.Sprint(seen), "[1 2]"; got != want {
+		t.Fatalf("executed generated values = %s, want %s", got, want)
+	}
+	if result.Terminal != proposalTerminalFirstFailure || result.Attempts != 2 || result.Accepted != 2 {
+		t.Fatalf("terminal result = %+v, want first failure after two accepted attempts", result)
+	}
+}
+
+func TestRunExecutionUsesExplicitBoundedControllerConfig(t *testing.T) {
+	gen := newPathGenerator([]PathVar{{Name: "value", Values: []any{1, 2, 3}}}, nil, 0, 0, false, 0, 0, 0)
+	plan := &ExecutionPlan{
+		Instructions: []Instruction{{Code: OpBody, Fn: func(*Context) {}}},
+		ProgramStart: []int{0}, ProgramLen: []int{1}, PathGens: []*PathGenerator{gen},
+	}
+	result := runExecution(&controlledBackend{}, nil, plan, 0)
+	if result.Terminal != proposalTerminalAttemptsBudget || result.Attempts != 3 || result.Accepted != 3 || result.Rejections != 0 {
+		t.Fatalf("terminal result = %+v, want explicit bounded execution of all generated paths", result)
+	}
+}
+
+func TestRunExecutionHonorsCanceledAndDeadlineContexts(t *testing.T) {
+	plan := &ExecutionPlan{
+		Instructions: []Instruction{{Code: OpBody, Fn: func(*Context) { t.Fatal("body must not run") }}},
+		ProgramStart: []int{0}, ProgramLen: []int{1}, PathGens: []*PathGenerator{newPathGenerator([]PathVar{{Name: "value", Values: []any{1}}}, nil, 0, 0, false, 0, 0, 0)},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if result := runExecutionContext(ctx, &controlledBackend{}, nil, plan, 0); result.Terminal != proposalTerminalCanceled {
+		t.Fatalf("canceled result = %+v, want canceled terminal", result)
+	}
+	deadline, deadlineCancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer deadlineCancel()
+	if result := runExecutionContext(deadline, &controlledBackend{}, nil, plan, 0); result.Terminal != proposalTerminalDeadline {
+		t.Fatalf("deadline result = %+v, want deadline terminal", result)
+	}
+}
+
+func TestDescribePathsDispatchHonorsCancellationAndDeadline(t *testing.T) {
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	deadline, deadlineCancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer deadlineCancel()
+
+	for _, tc := range []struct {
+		name     string
+		ctx      context.Context
+		terminal proposalTerminal
+	}{
+		{name: "canceled", ctx: canceled, terminal: proposalTerminalCanceled},
+		{name: "deadline", ctx: deadline, terminal: proposalTerminalDeadline},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bodyRan := false
+			results := describeWithCompilerContext(t, tc.ctx, "Paths", nil, func(s *Spec) {
+				s.Paths(func(pb *PathBuilder) { pb.Int("value", []int{1}) }).It("case", func(*Context) {
+					bodyRan = true
+				})
+			}, false)
+			if bodyRan || len(results) != 1 || results[0].Terminal != tc.terminal {
+				t.Fatalf("body ran = %t, results = %+v, want terminal %d", bodyRan, results, tc.terminal)
+			}
+		})
+	}
+}
+
+func TestGeneratedFatalUsesRealSubtestBoundary(t *testing.T) {
+	if os.Getenv("GO_SPECS_FATAL_BOUNDARY_HELPER") == "1" {
+		var afterRuns int
+		Describe(t, "fatal boundary", func(s *Spec) {
+			s.AfterEach(func(*Context) { afterRuns++ })
+			s.Paths(func(pb *PathBuilder) { pb.Int("value", []int{1, 2}) }).It("case", func(ctx *Context) {
+				if ctx.Path().Int("value") == 1 {
+					ctx.T.Fatal("generated fatal")
+				}
+				t.Log("second generated case ran")
+			})
+		})
+		t.Logf("controller returned after=%d", afterRuns)
+		return
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestGeneratedFatalUsesRealSubtestBoundary$")
+	cmd.Env = append(os.Environ(), "GO_SPECS_FATAL_BOUNDARY_HELPER=1")
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("fatal generated case unexpectedly passed: %s", output)
+	}
+	if !strings.Contains(string(output), "controller returned after=1") || strings.Contains(string(output), "second generated case ran") {
+		t.Fatalf("subtest isolation output = %s", output)
 	}
 }
