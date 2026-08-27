@@ -31,7 +31,7 @@ type runnableBackend struct {
 	tb testing.TB
 }
 
-func (r *runnableBackend) Helper()                          { r.tb.Helper() }
+func (r *runnableBackend) Helper()                           { r.tb.Helper() }
 func (r *runnableBackend) FailNow()                          { r.tb.FailNow() }
 func (r *runnableBackend) Fatal(args ...any)                 { r.tb.Fatal(args...) }
 func (r *runnableBackend) Fatalf(format string, args ...any) { r.tb.Fatalf(format, args...) }
@@ -40,7 +40,7 @@ func (r *runnableBackend) Errorf(format string, args ...any) { r.tb.Errorf(forma
 func (r *runnableBackend) Log(args ...any)                   { r.tb.Log(args...) }
 func (r *runnableBackend) Logf(format string, args ...any)   { r.tb.Logf(format, args...) }
 func (r *runnableBackend) Name() string                      { return r.tb.Name() }
-func (r *runnableBackend) Cleanup(fn func())                { r.tb.Cleanup(fn) }
+func (r *runnableBackend) Cleanup(fn func())                 { r.tb.Cleanup(fn) }
 
 func (r *runnableBackend) Run(name string, fn func(testing.TB)) {
 	if t, ok := r.tb.(*testing.T); ok {
@@ -69,6 +69,7 @@ func putTestBackend(b testBackend) {
 	}
 }
 
+//nolint:unused // Retained for testing.TB interoperation.
 func asTestingTB(tb testBackend) testing.TB {
 	if r, ok := tb.(*runnableBackend); ok {
 		return r.tb
@@ -79,6 +80,7 @@ func asTestingTB(tb testBackend) testing.TB {
 	panic("specs: backend does not implement testing.TB")
 }
 
+//nolint:unused // Retained for testing.T-specific interoperation.
 func requireTestingT(tb testBackend) *testing.T {
 	if r, ok := tb.(*runnableBackend); ok {
 		if t, ok := r.tb.(*testing.T); ok {

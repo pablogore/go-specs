@@ -1,9 +1,6 @@
 package specs
 
-import (
-	"os"
-	"testing"
-)
+import "testing"
 
 func TestShardSpecs(t *testing.T) {
 	specs := make([]RunSpec, 10)
@@ -79,10 +76,10 @@ func TestShardBCProgram(t *testing.T) {
 
 func TestParseShardString(t *testing.T) {
 	for _, tc := range []struct {
-		s    string
-		sh   int
-		tot  int
-		ok   bool
+		s   string
+		sh  int
+		tot int
+		ok  bool
 	}{
 		{"2/10", 2, 10, true},
 		{"0/1", 0, 1, true},
@@ -113,17 +110,15 @@ func TestParseShardFlag(t *testing.T) {
 }
 
 func TestParseShardEnv(t *testing.T) {
-	os.Setenv("SHARD", "3/7")
-	defer os.Unsetenv("SHARD")
+	t.Setenv("SHARD", "3/7")
 	shard, total, ok := ParseShardEnv()
 	if !ok || shard != 3 || total != 7 {
 		t.Errorf("ParseShardEnv(SHARD=3/7): got (%d,%d,%v)", shard, total, ok)
 	}
 
-	os.Unsetenv("SHARD")
-	os.Setenv("SHARD_INDEX", "1")
-	os.Setenv("SHARD_TOTAL", "4")
-	defer func() { os.Unsetenv("SHARD_INDEX"); os.Unsetenv("SHARD_TOTAL") }()
+	t.Setenv("SHARD", "")
+	t.Setenv("SHARD_INDEX", "1")
+	t.Setenv("SHARD_TOTAL", "4")
 	shard, total, ok = ParseShardEnv()
 	if !ok || shard != 1 || total != 4 {
 		t.Errorf("ParseShardEnv(INDEX/TOTAL): got (%d,%d,%v)", shard, total, ok)

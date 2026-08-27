@@ -199,9 +199,16 @@ func IsNilValue(value any) bool {
 		return true
 	}
 	rv := reflect.ValueOf(value)
-	switch rv.Kind() {
-	case reflect.Ptr, reflect.Map, reflect.Slice, reflect.Func, reflect.Interface, reflect.Chan:
+	if isNilableKind(rv.Kind()) {
 		return rv.IsNil()
+	}
+	return false
+}
+
+func isNilableKind(kind reflect.Kind) bool {
+	switch kind {
+	case reflect.Pointer, reflect.Map, reflect.Slice, reflect.Func, reflect.Interface, reflect.Chan:
+		return true
 	default:
 		return false
 	}

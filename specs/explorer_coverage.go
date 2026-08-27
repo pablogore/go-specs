@@ -11,10 +11,9 @@ package specs
 // unexported mutate, which does mutate bool/discrete dimensions) — see Mutator.Mutate's doc comment
 // for why the two exist and aren't meant to be interchangeable.
 type CoverageExplorer struct {
-	corpus   *Corpus
-	mutator  *Mutator
-	coverage Coverage
-	seen     Coverage
+	corpus  *Corpus
+	mutator *Mutator
+	seen    Coverage
 }
 
 // NewCoverageExplorer returns an explorer with deterministic corpus and mutator (same seed).

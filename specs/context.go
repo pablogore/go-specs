@@ -427,15 +427,6 @@ func valueHash(v any) uint64 {
 	}
 }
 
-// runBeforeHooks runs before-each fixtures in order.
-func runBeforeHooks(ctx *Context, fixtures []Fixture) {
-	for _, f := range fixtures {
-		if f != nil {
-			f(ctx)
-		}
-	}
-}
-
 // runAfterHooks runs after-each fixtures in reverse order (LIFO).
 func runAfterHooks(ctx *Context, fixtures []Fixture) {
 	for i := len(fixtures) - 1; i >= 0; i-- {
