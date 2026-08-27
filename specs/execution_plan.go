@@ -192,3 +192,63 @@ func runProgram(program []Instruction, ctx *Context, path *PathValues) {
 		}
 	}
 }
+
+// isolatedCaseAbort lets a controlled backend stop one isolated case without
+// terminating the parent test. Generated dispatch does not use this boundary yet.
+type isolatedCaseAbort struct{}
+
+type isolatedCaseResult struct {
+	Failed       bool
+	Panic        any
+	Path         PathValues
+	ContextReset bool
+}
+
+// runIsolatedCase proves the lifecycle required before generated dispatch can be enabled.
+// It is intentionally not called by runExecution until the later dispatch slice.
+func runIsolatedCase(backend testBackend, program []Instruction, path PathValues) (result isolatedCaseResult) {
+	ctx := contextPool.Get().(*Context)
+	ctx.Reset(backend)
+	ctx.SetPathValues(path)
+	result.Path = ctx.Path().clone()
+
+	var after []Instruction
+	for _, inst := range program {
+		if inst.Code == OpAfterHook && inst.Fn != nil {
+			after = append(after, inst)
+		}
+	}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			if _, aborted := recovered.(isolatedCaseAbort); !aborted {
+				result.Panic = recovered
+			}
+			result.Failed = true
+		}
+		for _, inst := range after {
+			func() {
+				defer func() {
+					if recovered := recover(); recovered != nil && result.Panic == nil {
+						result.Panic = recovered
+						result.Failed = true
+					}
+				}()
+				inst.Fn(ctx)
+			}()
+		}
+		result.Failed = result.Failed || ctx.failed
+		ctx.Reset(nil)
+		result.ContextReset = true
+		contextPool.Put(ctx)
+	}()
+
+	for _, inst := range program {
+		if inst.Code == OpAfterHook {
+			continue
+		}
+		if inst.Fn != nil {
+			inst.Fn(ctx)
+		}
+	}
+	return result
+}

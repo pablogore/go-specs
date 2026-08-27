@@ -20,15 +20,6 @@ const (
 	kindParallel
 )
 
-// specMeta is the metadata tracked per spec at registration (focus/skip). Used by It/FIt/SkipIt.
-// The builder maps this to specItem (with before/after/hookKey) for compilation.
-type specMeta struct {
-	Name  string
-	Fn    step
-	Focus bool
-	Skip  bool
-}
-
 // specItem is one registered spec (or skip). Before/after enable coalescing; hookKey identifies the scope set.
 type specItem struct {
 	kind    specKind

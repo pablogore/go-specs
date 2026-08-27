@@ -96,15 +96,6 @@ func (r *registry) enterNode(nodeType NodeType, name, file string, line int, fn 
 	}
 }
 
-func (r *registry) currentNodeID() int {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if len(r.stack) == 0 {
-		return -1
-	}
-	return r.stack[len(r.stack)-1]
-}
-
 func (r *registry) appendBeforeHook(fn func(*Context)) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

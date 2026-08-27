@@ -12,7 +12,7 @@ import (
 type Spec struct {
 	tb       testing.TB
 	backend  testBackend
-	reporter *report.Reporter
+	reporter report.EventReporter
 	seed     int64
 	hasSeed  bool
 
@@ -56,7 +56,7 @@ func Describe(tb testing.TB, name string, fn func(*Spec)) {
 }
 
 // describeWithCompiler runs Describe using the bytecode compiler (no arena).
-func describeWithCompiler(tb testing.TB, name string, rep *report.Reporter, fn func(*Spec), flat bool) {
+func describeWithCompiler(tb testing.TB, name string, rep report.EventReporter, fn func(*Spec), flat bool) {
 	c := newBytecodeCompiler()
 	c.PushScope(name)
 	pushCompiler(c)
@@ -113,7 +113,7 @@ func BuildSuite(tb testing.TB, name string, fn func(*Spec)) *CompiledSuite {
 }
 
 // DescribeWithReporter starts a top-level describe block with a reporter.
-func DescribeWithReporter(tb testing.TB, name string, rep *report.Reporter, fn func(*Spec)) {
+func DescribeWithReporter(tb testing.TB, name string, rep report.EventReporter, fn func(*Spec)) {
 	if currentRegistry() == nil {
 		describeWithCompiler(tb, name, rep, fn, false)
 		return
@@ -167,7 +167,7 @@ func DescribeFlat(tb testing.TB, name string, fn func(*Spec)) {
 }
 
 // DescribeFlatWithReporter is like DescribeFlat with a reporter.
-func DescribeFlatWithReporter(tb testing.TB, name string, rep *report.Reporter, fn func(*Spec)) {
+func DescribeFlatWithReporter(tb testing.TB, name string, rep report.EventReporter, fn func(*Spec)) {
 	if currentRegistry() == nil {
 		describeWithCompiler(tb, name, rep, fn, true)
 		return
@@ -200,12 +200,13 @@ func DescribeFast(tb testing.TB, name string, fn func(*Spec)) {
 	DescribeFlat(tb, name, fn)
 }
 
-// DescribeFastWithReporter is like DescribeFast with a reporter. Reporter still receives SpecStarted/SpecFinished.
-func DescribeFastWithReporter(tb testing.TB, name string, rep *report.Reporter, fn func(*Spec)) {
+// DescribeFastWithReporter is like DescribeFast with a reporter: rep receives SuiteStarted/SuiteFinished
+// and SpecStarted/SpecFinished events for the run.
+func DescribeFastWithReporter(tb testing.TB, name string, rep report.EventReporter, fn func(*Spec)) {
 	DescribeFlatWithReporter(tb, name, rep, fn)
 }
 
-func newSpec(tb testing.TB, withReporter bool, rep *report.Reporter) *Spec {
+func newSpec(tb testing.TB, withReporter bool, rep report.EventReporter) *Spec {
 	var backend testBackend
 	if tb != nil {
 		backend = asTestBackend(tb)
