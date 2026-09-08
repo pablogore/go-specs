@@ -80,9 +80,14 @@ func (p *parallelBackend) Name() string { return "" }
 
 func (p *parallelBackend) Cleanup(func()) {}
 
+// Run reports subtests as unsupported instead of silently skipping them. Parallel mode (ItParallel,
+// RunParallel, RunParallelBatched) has no mechanism to run a subtest body against a live testing.TB
+// from a worker goroutine, so fn is never called; unlike the old no-op, that is now a fatal failure
+// on this spec (via Fatalf, so it also aborts the rest of the spec body when abortOnFatal is set —
+// always true for every parallelBackend constructed in this package) instead of vanishing silently.
+// Specs that need t.Run should use the sequential runner (MinimalRunner.Run).
 func (p *parallelBackend) Run(name string, fn func(testing.TB)) {
-	// Parallel mode does not support subtests; Run is a no-op so the spec does not block.
-	// Specs that need t.Run should use the sequential runner.
+	p.Fatalf("t.Run(%q, ...) is not supported in parallel mode (ItParallel/RunParallel/RunParallelBatched); the subtest was not run — use the sequential runner for specs that need t.Run", name)
 }
 
 // runWorker runs specs whose indexes it acquires via next. Uses one Context from the pool for

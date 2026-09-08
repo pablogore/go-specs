@@ -146,6 +146,56 @@ func TestRunParallelBatched_FatalAssertionStopsSpecBody(t *testing.T) {
 	}
 }
 
+// TestParallelBackend_RunFailsLoudlyInsteadOfNoOp verifies #28's fix: t.Run under parallel mode
+// used to silently no-op (fn never called, no failure recorded, no signal at all). It now records
+// a fatal failure on the calling spec via Fatalf (fn still never called — parallel mode genuinely
+// has no mechanism to run a subtest against a live testing.TB from a worker goroutine) instead of
+// vanishing without a trace.
+func TestParallelBackend_RunFailsLoudlyInsteadOfNoOp(t *testing.T) {
+	results := make([]string, 1)
+	backend := &parallelBackend{specIndex: 0, results: &results}
+
+	var subtestRan bool
+	backend.Run("generated", func(testing.TB) { subtestRan = true })
+
+	if subtestRan {
+		t.Error("expected the subtest body to never run under parallel mode, but it ran")
+	}
+	if results[0] == "" {
+		t.Fatal("expected Run to record a failure, got none")
+	}
+	if !strings.Contains(results[0], "generated") {
+		t.Errorf("expected the failure to mention the subtest name, got %q", results[0])
+	}
+}
+
+// TestParallelBackend_RunAbortsSpecWhenAbortOnFatal verifies Run's failure aborts the rest of the
+// spec body when abortOnFatal is set (as it always is for every parallelBackend constructed by this
+// package — see runWorker, runWorkerBatched, and parallelStep in program.go), same as any other
+// fatal assertion.
+func TestParallelBackend_RunAbortsSpecWhenAbortOnFatal(t *testing.T) {
+	results := make([]string, 1)
+	backend := &parallelBackend{specIndex: 0, results: &results, abortOnFatal: true}
+
+	var ranAfter bool
+	func() {
+		defer func() {
+			if r := recover(); r != (parallelAbort{}) {
+				t.Errorf("expected recover to yield parallelAbort{}, got %v", r)
+			}
+		}()
+		backend.Run("generated", func(testing.TB) {})
+		ranAfter = true
+	}()
+
+	if ranAfter {
+		t.Error("expected code after Run to be skipped, but it ran")
+	}
+	if results[0] == "" {
+		t.Error("expected Run to record a failure before aborting")
+	}
+}
+
 // fakeReporter implements failureReporter for tests (captures Fatalf instead of failing).
 type fakeReporter struct {
 	fatalf func(string, ...any)
