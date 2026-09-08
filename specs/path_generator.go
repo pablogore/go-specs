@@ -620,16 +620,16 @@ func (g *PathGenerator) runExploration(fn func(PathValues)) {
 //
 // Real coverage-guided corpus growth needs ctx.coverage populated with genuine assertion-level
 // edge data on every iteration, which requires wiring the runner to set it per path iteration —
-// not yet done. Cartesian dispatch from the top-level Describe execution path is incremental
-// (runExecutionContext drives it through PathGenerator.sequence(), one candidate at a time, only
-// admitting feedback after the real case has run); Sampling and ExplorationGuided — this method
-// included — still go through this ForEach-driven path, fully generated before the runner
-// executes a single case, so corpus growth here still can't depend on a real per-iteration
-// result. Until sequence()/admitFeedback() cover these strategies too, corpus growth uses the
-// same call-site-signature novelty heuristic the plain strategy already uses (captureSignature)
-// as an honest, documented proxy — good enough to give NextInput something to mutate from
-// instead of always falling back to fully random input, but not genuine coverage-guided
-// selection.
+// not yet done. Cartesian and Sampling dispatch from the top-level Describe execution path are
+// incremental (runExecutionContext drives them through PathGenerator.sequence(), one candidate at
+// a time, only admitting feedback after the real case has run); ExplorationGuided — this method's
+// strategies (Coverage/Smart) included — still goes through this ForEach-driven path, fully
+// generated before the runner executes a single case, so corpus growth here still can't depend on
+// a real per-iteration result. Until sequence()/admitFeedback() cover this mode too, corpus growth
+// uses the same call-site-signature novelty heuristic the plain strategy already uses
+// (captureSignature) as an honest, documented proxy — good enough to give NextInput something to
+// mutate from instead of always falling back to fully random input, but not genuine
+// coverage-guided selection.
 func (g *PathGenerator) runGuidedExploration(fn func(PathValues), nextInput func(*PathGenerator) PathValues, corpus *Corpus) {
 	executed := 0
 	for executed < g.iterations {
