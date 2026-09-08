@@ -79,7 +79,7 @@ func TestProposalControllerDeterministicOrderingAndSequentialExecution(t *testin
 			},
 			Accept:        func(PathValues) bool { return true },
 			Execute:       func(candidate proposalCandidate) bool { return candidate.Values.Int("value") != 5 },
-			AdmitFeedback: func(candidate proposalCandidate) { feedback = append(feedback, candidate.Values.Int("value")) },
+			AdmitFeedback: func(fb proposalFeedback) { feedback = append(feedback, fb.Candidate.Values.Int("value")) },
 		}).Run(context.Background())
 	}
 
@@ -92,6 +92,40 @@ func TestProposalControllerDeterministicOrderingAndSequentialExecution(t *testin
 	}
 	if first.FirstFailure.AcceptedIndex != 2 || !reflect.DeepEqual(candidateValues(first.Feedback), []int{3}) {
 		t.Fatalf("first failure/feedback=%+v/%v, want accepted index 2 and [3]", first.FirstFailure, candidateValues(first.Feedback))
+	}
+}
+
+// TestProposalControllerAdmitFeedbackFiresForFailureToo would fail against the old contract, where
+// AdmitFeedback was only invoked after a successful Execute and a failing candidate's outcome was
+// silently dropped on the way to the first-failure terminal.
+func TestProposalControllerAdmitFeedbackFiresForFailureToo(t *testing.T) {
+	candidates := []PathValues{pathValue(1), pathValue(2)}
+	var got []proposalFeedback
+	result := newProposalController(proposalControllerConfig{
+		MaxAttempts: 2,
+		Propose: func() (PathValues, bool) {
+			candidate := candidates[0]
+			candidates = candidates[1:]
+			return candidate, true
+		},
+		Accept:  func(PathValues) bool { return true },
+		Execute: func(candidate proposalCandidate) bool { return candidate.Values.Int("value") != 2 },
+		AdmitFeedback: func(fb proposalFeedback) {
+			got = append(got, fb)
+		},
+	}).Run(context.Background())
+
+	if result.Terminal != proposalTerminalFirstFailure {
+		t.Fatalf("terminal=%v, want first failure", result.Terminal)
+	}
+	if len(got) != 2 {
+		t.Fatalf("AdmitFeedback calls=%d, want 2 (fired for both the pass and the failure)", len(got))
+	}
+	if !got[0].Passed || got[0].Candidate.Values.Int("value") != 1 {
+		t.Fatalf("first feedback=%+v, want passed=true value=1", got[0])
+	}
+	if got[1].Passed || got[1].Candidate.Values.Int("value") != 2 {
+		t.Fatalf("second feedback=%+v, want passed=false value=2", got[1])
 	}
 }
 

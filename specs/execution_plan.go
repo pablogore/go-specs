@@ -212,9 +212,10 @@ func runExecutionContext(runCtx context.Context, backend testBackend, rep *repor
 			MaxRejections: maxRejections,
 			Propose:       seq.next,
 			Execute: func(candidate proposalCandidate) bool {
-				passed := !runIsolatedCase(backend, program, candidate.Values).Failed
-				seq.admitFeedback(candidate.Values, passed)
-				return passed
+				return !runIsolatedCase(backend, program, candidate.Values).Failed
+			},
+			AdmitFeedback: func(feedback proposalFeedback) {
+				seq.admitFeedback(feedback.Candidate.Values, feedback.Passed)
 			},
 		}).Run(runCtx)
 	}

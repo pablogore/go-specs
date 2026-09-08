@@ -23,6 +23,14 @@ type proposalCandidate struct {
 	Accepted      bool
 }
 
+// proposalFeedback carries an executed candidate's outcome to AdmitFeedback. It is delivered for
+// both passing and failing candidates, since a failure is feedback too (e.g. for corpus/coverage
+// strategies that want to learn from it).
+type proposalFeedback struct {
+	Candidate proposalCandidate
+	Passed    bool
+}
+
 // proposalControllerResult is the ordered, internal result of a bounded run.
 type proposalControllerResult struct {
 	Seed         int64
@@ -45,7 +53,7 @@ type proposalControllerConfig struct {
 	Propose       func() (PathValues, bool)
 	Accept        func(PathValues) bool
 	Execute       func(proposalCandidate) bool
-	AdmitFeedback func(proposalCandidate)
+	AdmitFeedback func(proposalFeedback)
 }
 
 type proposalController struct{ config proposalControllerConfig }
@@ -97,14 +105,14 @@ func (c proposalController) Run(ctx context.Context) proposalControllerResult {
 		candidate.AcceptedIndex = result.Accepted
 		result.Candidates = append(result.Candidates, candidate)
 		passed := c.config.Execute == nil || c.config.Execute(candidate)
+		if c.config.AdmitFeedback != nil {
+			c.config.AdmitFeedback(proposalFeedback{Candidate: candidate, Passed: passed})
+		}
 		if !passed {
 			result.Terminal = proposalTerminalFirstFailure
 			result.FirstFailure = candidate
 			result.HasFailure = true
 			return result
-		}
-		if c.config.AdmitFeedback != nil {
-			c.config.AdmitFeedback(candidate)
 		}
 		result.Feedback = append(result.Feedback, candidate)
 	}
