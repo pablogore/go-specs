@@ -350,7 +350,9 @@ type pathSequence struct {
 	guidedSeenSigs map[uint64]struct{}
 }
 
-// sequence returns a pathSequence for g. Panics if g uses a mode sequence() doesn't support yet.
+// sequence returns a pathSequence for g, incremental for every ExplorationMode (Cartesian,
+// Sampling, and all three ExplorationGuided strategies). The panic below is a defensive guard
+// against an invalid ExplorationMode value, not a real gap.
 func (g *PathGenerator) sequence() *pathSequence {
 	seq := &pathSequence{g: g}
 	if g == nil || len(g.vars) == 0 || len(g.index) == 0 {
@@ -602,8 +604,9 @@ func (s *pathSequence) advance() bool {
 func (s *pathSequence) admitFeedback(candidate PathValues, passed bool) {}
 
 // bounds returns conservative (never-underestimating) MaxAttempts/MaxAccepted/MaxRejections
-// upper bounds for proposalControllerConfig, computed without generating a single candidate.
-// Panics if g uses a mode sequence()/bounds() doesn't support yet.
+// upper bounds for proposalControllerConfig, computed without generating a single candidate, for
+// every ExplorationMode. The panic below is a defensive guard against an invalid ExplorationMode
+// value, not a real gap.
 func (g *PathGenerator) bounds() (maxAttempts, maxAccepted, maxRejections int) {
 	if g == nil || len(g.vars) == 0 || len(g.index) == 0 {
 		return 1, 1, 1
@@ -636,7 +639,10 @@ func (g *PathGenerator) bounds() (maxAttempts, maxAccepted, maxRejections int) {
 	}
 }
 
-// ForEach iterates over every allowed combination in declaration order.
+// ForEach iterates over every allowed combination in declaration order. It's a direct, standalone
+// API for callers that construct a PathGenerator themselves (e.g. explore_mode_selection_test.go) —
+// runExecutionContext no longer calls it; the top-level Describe/Paths execution path is fully
+// incremental via PathGenerator.sequence()/bounds() for every mode.
 func (g *PathGenerator) ForEach(fn func(PathValues)) {
 	if g == nil {
 		if fn != nil {

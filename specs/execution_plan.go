@@ -202,11 +202,7 @@ func runExecutionContext(runCtx context.Context, backend testBackend, rep *repor
 		return proposalControllerResult{}
 	}
 	program := plan.Instructions[start : start+length]
-	incrementalCapable := i < len(plan.PathGens) && plan.PathGens[i] != nil &&
-		(plan.PathGens[i].mode == CartesianMode ||
-			plan.PathGens[i].mode == SamplingMode ||
-			plan.PathGens[i].mode == ExplorationGuided)
-	if incrementalCapable {
+	if i < len(plan.PathGens) && plan.PathGens[i] != nil {
 		gen := plan.PathGens[i]
 		seq := gen.sequence()
 		maxAttempts, maxAccepted, maxRejections := gen.bounds()
@@ -222,31 +218,6 @@ func runExecutionContext(runCtx context.Context, backend testBackend, rep *repor
 				seq.admitFeedback(feedback.Candidate.Values, feedback.Passed)
 			},
 		}).Run(runCtx)
-	}
-	if i < len(plan.PathGens) && plan.PathGens[i] != nil {
-		// Unreachable now that incrementalCapable covers every ExplorationMode value (Cartesian,
-		// Sampling, and all three ExplorationGuided strategies) — kept until a later change removes
-		// this ForEach/[]PathValues batch fallback entirely and closes #43.
-		paths := make([]PathValues, 0)
-		plan.PathGens[i].ForEach(func(path PathValues) { paths = append(paths, path.clone()) })
-		next := 0
-		result := newProposalController(proposalControllerConfig{
-			MaxAttempts:   len(paths),
-			MaxAccepted:   len(paths),
-			MaxRejections: len(paths),
-			Propose: func() (PathValues, bool) {
-				if next == len(paths) {
-					return PathValues{}, false
-				}
-				path := paths[next]
-				next++
-				return path, true
-			},
-			Execute: func(candidate proposalCandidate) bool {
-				return !runIsolatedCase(backend, program, candidate.Values).Failed
-			},
-		}).Run(runCtx)
-		return result
 	}
 	ctx := contextPool.Get().(*Context)
 	defer func() {
