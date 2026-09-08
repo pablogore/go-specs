@@ -327,6 +327,16 @@ type pathSequence struct {
 	sampleExecuted    int
 	sampleAttempts    int
 	sampleMaxAttempts int
+
+	// Explore (plain strategy only): mirrors runPlainExploration's state one call to next() at a
+	// time. exploreCorpus/exploreSeenSigs are local to this sequence rather than g.corpus/
+	// g.seenSigs — those remain owned by the ForEach/runPlainExploration path so a direct ForEach
+	// call and an incremental sequence() walk never share (and corrupt) the same corpus. The
+	// filter-retry loop is internal to nextExplore, same as nextSample.
+	exploreSeeded   bool
+	exploreExecuted int
+	exploreCorpus   []PathValues
+	exploreSeenSigs map[uint64]struct{}
 }
 
 // sequence returns a pathSequence for g. Panics if g uses a mode sequence() doesn't support yet.
@@ -354,8 +364,18 @@ func (g *PathGenerator) sequence() *pathSequence {
 			seq.done = true
 		}
 		return seq
+	case ExplorationGuided:
+		if g.strategy != strategyPlain {
+			panic("specs: PathGenerator.sequence supports plain Explore only for ExplorationGuided; ExploreCoverage/ExploreSmart land in a later change")
+		}
+		seq.exploreCorpus = make([]PathValues, 0, g.iterations/10+1)
+		seq.exploreSeenSigs = make(map[uint64]struct{})
+		if g.iterations <= 0 {
+			seq.done = true
+		}
+		return seq
 	default:
-		panic("specs: PathGenerator.sequence supports CartesianMode/SamplingMode only; Explore lands in a later change")
+		panic("specs: PathGenerator.sequence supports CartesianMode/SamplingMode/plain Explore only")
 	}
 }
 
@@ -379,6 +399,9 @@ func (s *pathSequence) next() (PathValues, bool) {
 	}
 	if s.g.mode == SamplingMode {
 		return s.nextSample()
+	}
+	if s.g.mode == ExplorationGuided {
+		return s.nextExplore()
 	}
 	return s.nextFiltered()
 }
@@ -414,6 +437,53 @@ func (s *pathSequence) nextSample() (PathValues, bool) {
 		}
 		s.sampleExecuted++
 		return pv, true
+	}
+}
+
+// nextExplore mirrors runPlainExploration: seed the corpus with one random candidate (if it
+// passes filters), then on each call either mutate a random corpus entry (70% of the time, once
+// the corpus is non-empty) or draw a fully random candidate, retrying internally against filters.
+// captureSignature() is called from this fixed call site for every candidate in the sequence, so
+// — same as runPlainExploration calling it from its own fixed loop line — it yields the same
+// signature every time within one sequence, meaning exploreCorpus only ever grows by the seed
+// candidate plus the first accepted candidate from this loop. That's an existing, documented
+// heuristic limitation (see runGuidedExploration's doc comment), not something introduced here;
+// this method preserves it exactly rather than changing observable behavior.
+func (s *pathSequence) nextExplore() (PathValues, bool) {
+	g := s.g
+	if !s.exploreSeeded {
+		s.exploreSeeded = true
+		var seed PathValues
+		seed.reset(g.index)
+		for i := range g.dims {
+			seed.present[g.dims[i].idx] = true
+			seed.values[g.dims[i].idx] = g.dims[i].randomValue(g.rng)
+		}
+		if g.allow(seed) {
+			s.exploreCorpus = append(s.exploreCorpus, seed.clone())
+		}
+	}
+	if s.exploreExecuted >= g.iterations {
+		s.done = true
+		return PathValues{}, false
+	}
+	for {
+		var candidate PathValues
+		if len(s.exploreCorpus) > 0 && g.rng.Float64() > 0.3 {
+			candidate = g.mutate(s.exploreCorpus[g.rng.Intn(len(s.exploreCorpus))])
+		} else {
+			candidate = g.randomInput()
+		}
+		if !g.allow(candidate) {
+			continue
+		}
+		s.exploreExecuted++
+		sig := captureSignature()
+		if _, seen := s.exploreSeenSigs[sig]; !seen {
+			s.exploreSeenSigs[sig] = struct{}{}
+			s.exploreCorpus = append(s.exploreCorpus, candidate.clone())
+		}
+		return candidate, true
 	}
 }
 
@@ -467,10 +537,13 @@ func (s *pathSequence) advance() bool {
 }
 
 // admitFeedback reports the real outcome of executing candidate back to the generator. It is a
-// no-op for Cartesian and Sample: neither strategy has feedback-dependent state — Sample's
-// candidates are drawn independently of prior results, same as runSamples always was.
-// Explore/ExploreCoverage/ExploreSmart will use it to move corpus/seen-state growth to after the
-// real case runs, once those strategies gain sequence() support.
+// no-op for Cartesian, Sample, and plain Explore: none of the three have feedback-dependent state.
+// Sample's candidates are drawn independently of prior results, same as runSamples always was.
+// Plain Explore's corpus growth is driven by captureSignature()'s call-site novelty proxy inside
+// nextExplore, not by whether the candidate passed — so admitFeedback has nothing to do for it
+// either, even though it now runs after the real case (see nextExplore's doc comment). Genuinely
+// reacting to passed here would require ExploreCoverage/ExploreSmart's real coverage wiring (see
+// runGuidedExploration's doc comment), which those two strategies still lack.
 func (s *pathSequence) admitFeedback(candidate PathValues, passed bool) {}
 
 // bounds returns conservative (never-underestimating) MaxAttempts/MaxAccepted/MaxRejections
@@ -495,8 +568,18 @@ func (g *PathGenerator) bounds() (maxAttempts, maxAccepted, maxRejections int) {
 			return 0, 0, 0
 		}
 		return g.samples, g.samples, g.samples
+	case ExplorationGuided:
+		// Same reasoning as SamplingMode: nextExplore's filter retries are internal and never
+		// surface as separate Propose calls, so g.iterations is exact.
+		if g.strategy != strategyPlain {
+			panic("specs: PathGenerator.bounds supports plain Explore only for ExplorationGuided; ExploreCoverage/ExploreSmart land in a later change")
+		}
+		if g.iterations <= 0 {
+			return 0, 0, 0
+		}
+		return g.iterations, g.iterations, g.iterations
 	default:
-		panic("specs: PathGenerator.bounds supports CartesianMode/SamplingMode only; Explore lands in a later change")
+		panic("specs: PathGenerator.bounds supports CartesianMode/SamplingMode/plain Explore only")
 	}
 }
 
@@ -620,16 +703,17 @@ func (g *PathGenerator) runExploration(fn func(PathValues)) {
 //
 // Real coverage-guided corpus growth needs ctx.coverage populated with genuine assertion-level
 // edge data on every iteration, which requires wiring the runner to set it per path iteration —
-// not yet done. Cartesian and Sampling dispatch from the top-level Describe execution path are
-// incremental (runExecutionContext drives them through PathGenerator.sequence(), one candidate at
-// a time, only admitting feedback after the real case has run); ExplorationGuided — this method's
-// strategies (Coverage/Smart) included — still goes through this ForEach-driven path, fully
-// generated before the runner executes a single case, so corpus growth here still can't depend on
-// a real per-iteration result. Until sequence()/admitFeedback() cover this mode too, corpus growth
-// uses the same call-site-signature novelty heuristic the plain strategy already uses
-// (captureSignature) as an honest, documented proxy — good enough to give NextInput something to
-// mutate from instead of always falling back to fully random input, but not genuine
-// coverage-guided selection.
+// not yet done. Cartesian, Sampling, and plain Explore dispatch from the top-level Describe
+// execution path are all incremental now (runExecutionContext drives them through
+// PathGenerator.sequence(), one candidate at a time, only admitting feedback after the real case
+// has run — see nextExplore for the plain strategy); ExploreCoverage/ExploreSmart — this method's
+// strategies — still go through this ForEach-driven path, fully generated before the runner
+// executes a single case, so corpus growth here still can't depend on a real per-iteration result.
+// Until sequence()/bounds() cover these two strategies too, corpus growth uses the same
+// call-site-signature novelty heuristic the plain strategy uses (captureSignature, now in
+// nextExplore) as an honest, documented proxy — good enough to give NextInput something to mutate
+// from instead of always falling back to fully random input, but not genuine coverage-guided
+// selection.
 func (g *PathGenerator) runGuidedExploration(fn func(PathValues), nextInput func(*PathGenerator) PathValues, corpus *Corpus) {
 	executed := 0
 	for executed < g.iterations {
