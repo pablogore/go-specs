@@ -17,6 +17,15 @@ type Spec struct {
 	seed     int64
 	hasSeed  bool
 
+	// compiler/registry are the exact build target this Spec (and any Spec it constructs for a
+	// nested Describe/When) writes into. Set once by the top-level entry point (Describe,
+	// BuildSuite, ...) and threaded explicitly through every nested call from then on, instead of
+	// resolved via package-level global state — two goroutines building unrelated suites concurrently
+	// (e.g. two t.Parallel() tests each calling Describe) must never observe each other's compiler or
+	// registry. At most one of the two is non-nil for a given Spec.
+	compiler *bytecodeCompiler
+	registry *registry
+
 	// Either (arena, rootID) when built via Analyze/registry, or plan when built via bytecode compiler.
 	arena       *NodeArena
 	rootID      int
@@ -46,7 +55,7 @@ func Describe(tb testing.TB, name string, fn func(*Spec)) {
 	if tb != nil {
 		backend = asTestBackend(tb)
 	}
-	s := &Spec{tb: tb, backend: backend, arena: CurrentArena(), rootID: rootID}
+	s := &Spec{tb: tb, backend: backend, arena: CurrentArena(), rootID: rootID, registry: currentRegistry()}
 	if fn != nil {
 		fn(s)
 	}
@@ -64,16 +73,11 @@ func describeWithCompiler(tb testing.TB, name string, rep report.EventReporter, 
 func describeWithCompilerContext(tb testing.TB, runCtx context.Context, name string, rep report.EventReporter, fn func(*Spec), flat bool) []proposalControllerResult {
 	c := newBytecodeCompiler()
 	c.PushScope(name)
-	pushCompiler(c)
-	defer func() {
-		popCompiler()
-		c.PopScope()
-	}()
 	var backend testBackend
 	if tb != nil {
 		backend = asTestBackend(tb)
 	}
-	s := &Spec{tb: tb, backend: backend, reporter: rep, flat: flat}
+	s := &Spec{tb: tb, backend: backend, reporter: rep, flat: flat, compiler: c}
 	if fn != nil {
 		fn(s)
 	}
@@ -92,13 +96,10 @@ func BuildSuite(tb testing.TB, name string, fn func(*Spec)) *CompiledSuite {
 	if currentRegistry() == nil {
 		c := newBytecodeCompiler()
 		c.PushScope(name)
-		pushCompiler(c)
-		s := &Spec{tb: tb, backend: nil}
+		s := &Spec{tb: tb, backend: nil, compiler: c}
 		if fn != nil {
 			fn(s)
 		}
-		popCompiler()
-		c.PopScope()
 		s.plan = c.TakePlan()
 		s.Compile()
 		return s.suite
@@ -110,7 +111,7 @@ func BuildSuite(tb testing.TB, name string, fn func(*Spec)) *CompiledSuite {
 		return nil
 	}
 	defer pop()
-	s := &Spec{tb: tb, backend: nil, arena: CurrentArena(), rootID: rootID}
+	s := &Spec{tb: tb, backend: nil, arena: CurrentArena(), rootID: rootID, registry: currentRegistry()}
 	if fn != nil {
 		fn(s)
 	}
@@ -135,7 +136,7 @@ func DescribeWithReporter(tb testing.TB, name string, rep report.EventReporter, 
 	if tb != nil {
 		backend = asTestBackend(tb)
 	}
-	s := &Spec{tb: tb, backend: backend, reporter: rep, arena: CurrentArena(), rootID: rootID}
+	s := &Spec{tb: tb, backend: backend, reporter: rep, arena: CurrentArena(), rootID: rootID, registry: currentRegistry()}
 	if fn != nil {
 		fn(s)
 	}
@@ -162,7 +163,7 @@ func DescribeFlat(tb testing.TB, name string, fn func(*Spec)) {
 	if tb != nil {
 		backend = asTestBackend(tb)
 	}
-	s := &Spec{tb: tb, backend: backend, arena: CurrentArena(), rootID: rootID, flat: true}
+	s := &Spec{tb: tb, backend: backend, arena: CurrentArena(), rootID: rootID, flat: true, registry: currentRegistry()}
 	if fn != nil {
 		fn(s)
 	}
@@ -189,7 +190,7 @@ func DescribeFlatWithReporter(tb testing.TB, name string, rep report.EventReport
 	if tb != nil {
 		backend = asTestBackend(tb)
 	}
-	s := &Spec{tb: tb, backend: backend, reporter: rep, arena: CurrentArena(), rootID: rootID, flat: true}
+	s := &Spec{tb: tb, backend: backend, reporter: rep, arena: CurrentArena(), rootID: rootID, flat: true, registry: currentRegistry()}
 	if fn != nil {
 		fn(s)
 	}
@@ -258,16 +259,21 @@ func (s *Spec) Describe(name string, fn func(*Spec)) {
 	if s == nil || fn == nil {
 		return
 	}
-	if c := currentCompiler(); c != nil {
+	if c := s.compiler; c != nil {
 		c.PushScope(name)
 		defer c.PopScope()
-		fn(&Spec{tb: s.tb, backend: s.backend, reporter: s.reporter, seed: s.seed, hasSeed: s.hasSeed})
+		fn(&Spec{tb: s.tb, backend: s.backend, reporter: s.reporter, seed: s.seed, hasSeed: s.hasSeed, compiler: c})
+		return
+	}
+	child := &Spec{tb: s.tb, backend: s.backend, reporter: s.reporter, seed: s.seed, hasSeed: s.hasSeed, registry: s.registry}
+	if s.registry == nil {
+		fn(child)
 		return
 	}
 	file, line := callerLocation(2)
-	_, pop := enterAnalyzeNode(DescribeNode, name, file, line, nil)
+	_, pop := s.registry.enterNode(DescribeNode, name, file, line, nil)
 	defer pop()
-	fn(&Spec{tb: s.tb, backend: s.backend, reporter: s.reporter, seed: s.seed, hasSeed: s.hasSeed})
+	fn(child)
 }
 
 // When starts a when block. fn may be func(*Spec) or func() for legacy scope.
@@ -275,26 +281,34 @@ func (s *Spec) When(name string, fn interface{}) {
 	if s == nil || fn == nil {
 		return
 	}
-	if c := currentCompiler(); c != nil {
+	if c := s.compiler; c != nil {
 		c.PushScope(name)
 		defer c.PopScope()
 		switch f := fn.(type) {
 		case func(*Spec):
-			f(&Spec{tb: s.tb, backend: s.backend, reporter: s.reporter, seed: s.seed, hasSeed: s.hasSeed})
+			f(&Spec{tb: s.tb, backend: s.backend, reporter: s.reporter, seed: s.seed, hasSeed: s.hasSeed, compiler: c})
 		case func():
 			f()
 		}
 		return
 	}
-	file, line := callerLocation(2)
-	_, pop := enterAnalyzeNode(WhenNode, name, file, line, nil)
-	defer pop()
-	switch f := fn.(type) {
-	case func(*Spec):
-		f(&Spec{tb: s.tb, backend: s.backend, reporter: s.reporter, seed: s.seed, hasSeed: s.hasSeed})
-	case func():
-		f()
+	child := &Spec{tb: s.tb, backend: s.backend, reporter: s.reporter, seed: s.seed, hasSeed: s.hasSeed, registry: s.registry}
+	runFn := func() {
+		switch f := fn.(type) {
+		case func(*Spec):
+			f(child)
+		case func():
+			f()
+		}
 	}
+	if s.registry == nil {
+		runFn()
+		return
+	}
+	file, line := callerLocation(2)
+	_, pop := s.registry.enterNode(WhenNode, name, file, line, nil)
+	defer pop()
+	runFn()
 }
 
 // It registers a spec.
@@ -302,12 +316,15 @@ func (s *Spec) It(name string, fn func(*Context)) {
 	if s == nil {
 		return
 	}
-	if c := currentCompiler(); c != nil {
+	if c := s.compiler; c != nil {
 		c.EmitIt(name, fn)
 		return
 	}
+	if s.registry == nil {
+		return
+	}
 	file, line := callerLocation(2)
-	_, pop := enterAnalyzeNode(ItNode, name, file, line, fn)
+	_, pop := s.registry.enterNode(ItNode, name, file, line, fn)
 	pop()
 }
 
@@ -316,11 +333,13 @@ func (s *Spec) BeforeEach(fn func(*Context)) {
 	if s == nil || fn == nil {
 		return
 	}
-	if c := currentCompiler(); c != nil {
+	if c := s.compiler; c != nil {
 		c.AppendBefore(fn)
 		return
 	}
-	AppendBeforeHook(fn)
+	if s.registry != nil {
+		s.registry.appendBeforeHook(fn)
+	}
 }
 
 // AfterEach appends an after-each hook to the current node.
@@ -328,11 +347,13 @@ func (s *Spec) AfterEach(fn func(*Context)) {
 	if s == nil || fn == nil {
 		return
 	}
-	if c := currentCompiler(); c != nil {
+	if c := s.compiler; c != nil {
 		c.AppendAfter(fn)
 		return
 	}
-	AppendAfterHook(fn)
+	if s.registry != nil {
+		s.registry.appendAfterHook(fn)
+	}
 }
 
 // RandomSeed sets the RNG seed for path/context in this spec subtree.
@@ -347,14 +368,17 @@ func (s *Spec) runPathWithContext(name string, gen *PathGenerator, _ interface{}
 	if s == nil || fn == nil {
 		return
 	}
-	if c := currentCompiler(); c != nil {
+	if c := s.compiler; c != nil {
 		c.SetPathGen(gen)
 		c.EmitIt(name, fn)
 		return
 	}
+	if s.registry == nil {
+		return
+	}
 	file, line := callerLocation(2)
-	_, pop := enterAnalyzeNode(ItNode, name, file, line, fn)
-	SetPathGen(gen)
+	_, pop := s.registry.enterNode(ItNode, name, file, line, fn)
+	s.registry.setPathGen(gen)
 	pop()
 }
 

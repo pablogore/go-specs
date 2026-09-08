@@ -8,11 +8,11 @@ import (
 // bytecodeCompiler emits instructions directly into an ExecutionPlan during Describe.
 // No NodeArena is allocated; BeforeEach/AfterEach/It append instructions immediately.
 type bytecodeCompiler struct {
-	plan       *ExecutionPlan
-	nameStack  []string
+	plan        *ExecutionPlan
+	nameStack   []string
 	beforeStack [][]func(*Context)
 	afterStack  [][]func(*Context)
-	pathGen    *PathGenerator
+	pathGen     *PathGenerator
 	// scratch for flattening hooks and building program
 	beforeFlat []func(*Context)
 	afterFlat  []func(*Context)
@@ -161,33 +161,4 @@ func (c *bytecodeCompiler) TakePlan() *ExecutionPlan {
 	plan := c.plan
 	c.reset()
 	return plan
-}
-
-// currentCompiler returns the active bytecode compiler, or nil if not in compiler mode.
-var activeCompiler struct {
-	mu    sync.Mutex
-	stack []*bytecodeCompiler
-}
-
-func currentCompiler() *bytecodeCompiler {
-	activeCompiler.mu.Lock()
-	defer activeCompiler.mu.Unlock()
-	if len(activeCompiler.stack) == 0 {
-		return nil
-	}
-	return activeCompiler.stack[len(activeCompiler.stack)-1]
-}
-
-func pushCompiler(c *bytecodeCompiler) {
-	activeCompiler.mu.Lock()
-	activeCompiler.stack = append(activeCompiler.stack, c)
-	activeCompiler.mu.Unlock()
-}
-
-func popCompiler() {
-	activeCompiler.mu.Lock()
-	if len(activeCompiler.stack) > 0 {
-		activeCompiler.stack = activeCompiler.stack[:len(activeCompiler.stack)-1]
-	}
-	activeCompiler.mu.Unlock()
 }
