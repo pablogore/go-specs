@@ -306,7 +306,7 @@ func (g *PathGenerator) FillPathValues(index []int, pv *PathValues) {
 // the generator afterward, so guided strategies can update corpus/novelty state only once the
 // real case has actually run.
 //
-// Only CartesianMode is supported so far; Sample and Explore/ExploreCoverage/ExploreSmart still
+// CartesianMode and SamplingMode are supported so far; Explore/ExploreCoverage/ExploreSmart still
 // go through ForEach until a later change extends sequence()/bounds() to those strategies.
 type pathSequence struct {
 	g       *PathGenerator
@@ -317,6 +317,16 @@ type pathSequence struct {
 
 	indexes []int // Cartesian with filters: odometer state, mirrors enumerate()
 	started bool
+
+	// Sample: mirrors runSamples' state one call to next() at a time instead of looping to
+	// completion up front. sampleAttempts/sampleMaxAttempts preserve runSamples' samples*100
+	// retry budget and panic message; the budget and the filter-retry loop are both internal to
+	// nextSample and never surface to the proposalController as separate Propose calls.
+	sampleIdx         int
+	hasSampleVar      bool
+	sampleExecuted    int
+	sampleAttempts    int
+	sampleMaxAttempts int
 }
 
 // sequence returns a pathSequence for g. Panics if g uses a mode sequence() doesn't support yet.
@@ -326,15 +336,27 @@ func (g *PathGenerator) sequence() *pathSequence {
 		seq.trivial = true
 		return seq
 	}
-	if g.mode != CartesianMode {
-		panic("specs: PathGenerator.sequence supports CartesianMode only; Sample/Explore land in a later change")
-	}
-	if len(g.filters) == 0 {
-		seq.it = g.Iterator()
+	switch g.mode {
+	case CartesianMode:
+		if len(g.filters) == 0 {
+			seq.it = g.Iterator()
+			return seq
+		}
+		seq.indexes = make([]int, len(g.dims))
 		return seq
+	case SamplingMode:
+		seq.sampleIdx, seq.hasSampleVar = g.index[sampleVarName]
+		seq.sampleMaxAttempts = g.samples * 100
+		if seq.sampleMaxAttempts < g.samples {
+			seq.sampleMaxAttempts = g.samples
+		}
+		if g.samples <= 0 {
+			seq.done = true
+		}
+		return seq
+	default:
+		panic("specs: PathGenerator.sequence supports CartesianMode/SamplingMode only; Explore lands in a later change")
 	}
-	seq.indexes = make([]int, len(g.dims))
-	return seq
 }
 
 // next proposes the next candidate, or (PathValues{}, false) once the space is exhausted.
@@ -355,7 +377,44 @@ func (s *pathSequence) next() (PathValues, bool) {
 		s.g.FillPathValues(s.it.Index(), &pv)
 		return pv, true
 	}
+	if s.g.mode == SamplingMode {
+		return s.nextSample()
+	}
 	return s.nextFiltered()
+}
+
+// nextSample mirrors runSamples: draw a random value per dimension, retry internally against
+// filters up to the same samples*100 attempt budget (panicking with the same message if that
+// budget is exhausted), and number the synthetic "sample" dimension 1-indexed. Each call yields
+// at most one filter-accepted candidate; the internal retries never surface to the
+// proposalController as separate Propose calls.
+func (s *pathSequence) nextSample() (PathValues, bool) {
+	g := s.g
+	if s.sampleExecuted >= g.samples {
+		s.done = true
+		return PathValues{}, false
+	}
+	for {
+		s.sampleAttempts++
+		if s.sampleAttempts > s.sampleMaxAttempts {
+			panic("specs: sampling could not satisfy filters; reduce sample count or relax filters")
+		}
+		var pv PathValues
+		pv.reset(g.index)
+		for _, dim := range g.dims {
+			pv.present[dim.idx] = true
+			pv.values[dim.idx] = dim.randomValue(g.rng)
+		}
+		if s.hasSampleVar {
+			pv.present[s.sampleIdx] = true
+			pv.values[s.sampleIdx] = s.sampleExecuted + 1
+		}
+		if !g.allow(pv) {
+			continue
+		}
+		s.sampleExecuted++
+		return pv, true
+	}
 }
 
 // nextFiltered mirrors enumerate()'s odometer, yielding one allowed combination per call instead
@@ -408,9 +467,10 @@ func (s *pathSequence) advance() bool {
 }
 
 // admitFeedback reports the real outcome of executing candidate back to the generator. It is a
-// no-op for Cartesian (and, once implemented, Sample): neither strategy has feedback-dependent
-// state. Explore/ExploreCoverage/ExploreSmart will use it to move corpus/seen-state growth to
-// after the real case runs, once those strategies gain sequence() support.
+// no-op for Cartesian and Sample: neither strategy has feedback-dependent state — Sample's
+// candidates are drawn independently of prior results, same as runSamples always was.
+// Explore/ExploreCoverage/ExploreSmart will use it to move corpus/seen-state growth to after the
+// real case runs, once those strategies gain sequence() support.
 func (s *pathSequence) admitFeedback(candidate PathValues, passed bool) {}
 
 // bounds returns conservative (never-underestimating) MaxAttempts/MaxAccepted/MaxRejections
@@ -420,14 +480,24 @@ func (g *PathGenerator) bounds() (maxAttempts, maxAccepted, maxRejections int) {
 	if g == nil || len(g.vars) == 0 || len(g.index) == 0 {
 		return 1, 1, 1
 	}
-	if g.mode != CartesianMode {
-		panic("specs: PathGenerator.bounds supports CartesianMode only; Sample/Explore land in a later change")
+	switch g.mode {
+	case CartesianMode:
+		total := 1
+		for _, dim := range g.dims {
+			total *= dim.len()
+		}
+		return total, total, total
+	case SamplingMode:
+		// next() emits at most g.samples candidates (nextSample's own retry budget is internal
+		// and never surfaces as separate Propose calls), so g.samples is an exact bound, not just
+		// a conservative one.
+		if g.samples <= 0 {
+			return 0, 0, 0
+		}
+		return g.samples, g.samples, g.samples
+	default:
+		panic("specs: PathGenerator.bounds supports CartesianMode/SamplingMode only; Explore lands in a later change")
 	}
-	total := 1
-	for _, dim := range g.dims {
-		total *= dim.len()
-	}
-	return total, total, total
 }
 
 // ForEach iterates over every allowed combination in declaration order.

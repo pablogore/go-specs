@@ -104,13 +104,106 @@ func TestPathGeneratorBoundsIsConservativeUpperBound(t *testing.T) {
 }
 
 func TestPathSequencePanicsForUnsupportedModes(t *testing.T) {
-	sample := newPathGenerator([]PathVar{{Name: "x", Values: []any{1, 2, 3}}}, nil, 2, 0, false, 0, 0, 0)
-	assertPanics(t, func() { sample.sequence() })
-	assertPanics(t, func() { sample.bounds() })
-
 	explore := newPathGenerator([]PathVar{{Name: "x", Values: []any{1, 2, 3}}}, nil, 0, 0, false, 5, 0, 0)
 	assertPanics(t, func() { explore.sequence() })
 	assertPanics(t, func() { explore.bounds() })
+}
+
+func TestPathSequenceSampleEmitsExactlyRequestedCount(t *testing.T) {
+	const samples = 7
+	gen := newPathGenerator([]PathVar{
+		{Name: "x", rangeSpec: &intRange{min: 0, max: 100}},
+	}, nil, samples, 0, false, 0, 0, 0)
+
+	got := collectSequence(gen)
+	if len(got) != samples {
+		t.Fatalf("len(got) = %d, want %d", len(got), samples)
+	}
+}
+
+func TestPathSequenceSampleMatchesRunSamplesForSameSeed(t *testing.T) {
+	newGen := func() *PathGenerator {
+		return newPathGenerator([]PathVar{
+			{Name: "x", rangeSpec: &intRange{min: 0, max: 50}},
+		}, nil, 5, 42, true, 0, 0, 0)
+	}
+
+	got := collectSequence(newGen())
+	want := collectForEach(newGen())
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("sequence-based samples = %v, want %v (must match runSamples exactly for the same seed)", got, want)
+	}
+}
+
+func TestPathSequenceSampleRespectsFilters(t *testing.T) {
+	gen := newPathGenerator([]PathVar{
+		{Name: "x", rangeSpec: &intRange{min: 0, max: 20}},
+	}, []PathFilter{func(pv PathValues) bool {
+		v, _ := pv.lookup("x")
+		return v.(int)%2 == 0
+	}}, 6, 0, false, 0, 0, 0)
+
+	seq := gen.sequence()
+	for i := 0; i < 6; i++ {
+		pv, ok := seq.next()
+		if !ok {
+			t.Fatalf("expected candidate %d, got exhaustion", i)
+		}
+		if pv.Int("x")%2 != 0 {
+			t.Fatalf("expected even x, got %d", pv.Int("x"))
+		}
+	}
+	if _, ok := seq.next(); ok {
+		t.Fatal("expected exhaustion after 6 accepted candidates")
+	}
+}
+
+func TestPathSequenceSamplePanicsWhenFiltersCannotBeSatisfied(t *testing.T) {
+	gen := newPathGenerator([]PathVar{
+		{Name: "x", Values: []any{1}},
+	}, []PathFilter{func(PathValues) bool { return false }}, 3, 0, false, 0, 0, 0)
+
+	seq := gen.sequence()
+	assertPanics(t, func() { seq.next() })
+}
+
+func TestPathSequenceSampleBoundsIsExact(t *testing.T) {
+	gen := newPathGenerator([]PathVar{
+		{Name: "x", rangeSpec: &intRange{min: 0, max: 100}},
+	}, nil, 9, 0, false, 0, 0, 0)
+
+	maxAttempts, maxAccepted, maxRejections := gen.bounds()
+	if maxAttempts != 9 || maxAccepted != 9 || maxRejections != 9 {
+		t.Fatalf("bounds = (%d, %d, %d), want (9, 9, 9)", maxAttempts, maxAccepted, maxRejections)
+	}
+	if got := len(collectSequence(gen)); got != maxAccepted {
+		t.Fatalf("actual accepted candidates = %d, want exactly %d", got, maxAccepted)
+	}
+}
+
+func TestPathSequenceSampleAdmitFeedbackDoesNotAlterSequence(t *testing.T) {
+	newGen := func() *PathGenerator {
+		return newPathGenerator([]PathVar{
+			{Name: "x", rangeSpec: &intRange{min: 0, max: 50}},
+		}, nil, 5, 7, true, 0, 0, 0)
+	}
+
+	baseline := collectSequence(newGen())
+
+	gen := newGen()
+	seq := gen.sequence()
+	var withFeedback []string
+	for {
+		pv, ok := seq.next()
+		if !ok {
+			break
+		}
+		withFeedback = append(withFeedback, gen.FormatPathValuesForReport(pv))
+		seq.admitFeedback(pv, withFeedback != nil)
+	}
+	if !reflect.DeepEqual(baseline, withFeedback) {
+		t.Fatalf("admitFeedback altered the sequence: got %v, want %v", withFeedback, baseline)
+	}
 }
 
 func assertPanics(t *testing.T, fn func()) {
