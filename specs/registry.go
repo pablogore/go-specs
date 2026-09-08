@@ -1,9 +1,11 @@
 package specs
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -41,13 +43,40 @@ type registry struct {
 	stack []int
 }
 
+// registryStack holds one Analyze/Describe registry stack per goroutine. A flat, ungoroutine-scoped
+// stack would let two goroutines building unrelated suites concurrently (e.g. two t.Parallel() tests
+// each calling Analyze or top-level Describe) observe and mutate each other's top-of-stack registry —
+// mutex-protected against low-level data races, but still logically wrong, since "current registry"
+// is meant to track a single call chain, not whichever goroutine pushed most recently process-wide.
 type registryStack struct {
-	mu    sync.Mutex
-	stack []*registry
+	mu     sync.Mutex
+	stacks map[int64][]*registry
 }
 
-var activeRegistries registryStack
-var analyzeLock sync.Mutex
+var activeRegistries = registryStack{stacks: map[int64][]*registry{}}
+
+// goroutineID extracts the numeric goroutine id from runtime.Stack's leading "goroutine N [state]:"
+// line. Used only at Analyze/Describe/BuildSuite entry points to key the per-goroutine registry
+// stack — never in the hot per-spec execution path — so its cost is one Analyze/Describe call, not
+// one per It/BeforeEach/AfterEach.
+func goroutineID() int64 {
+	var buf [64]byte
+	n := runtime.Stack(buf[:], false)
+	b := buf[:n]
+	const prefix = "goroutine "
+	if !bytes.HasPrefix(b, []byte(prefix)) {
+		return 0
+	}
+	b = b[len(prefix):]
+	if i := bytes.IndexByte(b, ' '); i >= 0 {
+		b = b[:i]
+	}
+	id, err := strconv.ParseInt(string(b), 10, 64)
+	if err != nil {
+		return 0
+	}
+	return id
+}
 
 // initialArenaCap pre-sizes arena slices to avoid reallocations in large suites (e.g. 2000 specs).
 const initialArenaCap = 4096
@@ -129,25 +158,32 @@ func (r *registry) setPathGen(gen *PathGenerator) {
 }
 
 func pushRegistry(r *registry) func() {
+	gid := goroutineID()
 	activeRegistries.mu.Lock()
-	activeRegistries.stack = append(activeRegistries.stack, r)
+	activeRegistries.stacks[gid] = append(activeRegistries.stacks[gid], r)
 	activeRegistries.mu.Unlock()
 	return func() {
 		activeRegistries.mu.Lock()
-		if len(activeRegistries.stack) > 0 {
-			activeRegistries.stack = activeRegistries.stack[:len(activeRegistries.stack)-1]
+		if s := activeRegistries.stacks[gid]; len(s) > 0 {
+			if len(s) == 1 {
+				delete(activeRegistries.stacks, gid)
+			} else {
+				activeRegistries.stacks[gid] = s[:len(s)-1]
+			}
 		}
 		activeRegistries.mu.Unlock()
 	}
 }
 
 func currentRegistry() *registry {
+	gid := goroutineID()
 	activeRegistries.mu.Lock()
 	defer activeRegistries.mu.Unlock()
-	if len(activeRegistries.stack) == 0 {
+	s := activeRegistries.stacks[gid]
+	if len(s) == 0 {
 		return nil
 	}
-	return activeRegistries.stack[len(activeRegistries.stack)-1]
+	return s[len(s)-1]
 }
 
 // ensureRegistry pushes a new registry if none is active; call the returned func to pop.
@@ -195,15 +231,17 @@ func SetPathGen(gen *PathGenerator) {
 	}
 }
 
+// Analyze builds a suite tree by running fn with a fresh registry pushed for the calling goroutine.
+// Safe to call concurrently from multiple goroutines (e.g. from several t.Parallel() tests): each
+// call gets its own registry, scoped to the goroutine that called Analyze, so concurrent calls never
+// observe each other's tree.
 func Analyze(fn func()) *SuiteTree {
-	analyzeLock.Lock()
-	defer analyzeLock.Unlock()
 	reg := newRegistry()
 	pop := pushRegistry(reg)
+	defer pop()
 	if fn != nil {
 		fn()
 	}
-	pop()
 	return reg.currentSuite()
 }
 
