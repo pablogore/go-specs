@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
+	"sync"
 )
 
 const UpdateSnapshotsEnv = "GO_SPECS_UPDATE_SNAPSHOTS"
@@ -14,6 +15,22 @@ const UpdateSnapshotsEnv = "GO_SPECS_UPDATE_SNAPSHOTS"
 // Backend is used to report failures (e.g. testing.TB).
 type Backend interface {
 	Fatalf(format string, args ...any)
+}
+
+// fileLocks serializes RunFromFile's load-mutate-save cycle per snapshot file, keyed by absolute
+// path. Without it, two specs sharing a snapshot file (e.g. parallel specs in the same test file,
+// each snapshotting under a different name) race: both Load the same on-disk contents, each mutates
+// its own key in its own in-memory copy, and whichever Save runs last silently clobbers the other's
+// update. The lock also protects concurrent reads from observing a partially-written file mid-Save.
+var fileLocks sync.Map // map[string]*sync.Mutex
+
+func lockFor(path string) *sync.Mutex {
+	key := path
+	if abs, err := filepath.Abs(path); err == nil {
+		key = abs
+	}
+	v, _ := fileLocks.LoadOrStore(key, &sync.Mutex{})
+	return v.(*sync.Mutex)
 }
 
 // RunFromFile compares value to the stored snapshot for name, or creates/updates it.
@@ -38,6 +55,10 @@ func RunFromFile(backend Backend, callerFile string, name string, value any) {
 		backend.Fatalf("snapshot: marshal: %v", err)
 		return
 	}
+
+	mu := lockFor(snapshotPath)
+	mu.Lock()
+	defer mu.Unlock()
 
 	update := os.Getenv(UpdateSnapshotsEnv) == "1"
 	data, err := Load(snapshotPath)
