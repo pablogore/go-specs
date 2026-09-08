@@ -205,7 +205,7 @@ func runExecutionContext(runCtx context.Context, backend testBackend, rep *repor
 	incrementalCapable := i < len(plan.PathGens) && plan.PathGens[i] != nil &&
 		(plan.PathGens[i].mode == CartesianMode ||
 			plan.PathGens[i].mode == SamplingMode ||
-			(plan.PathGens[i].mode == ExplorationGuided && plan.PathGens[i].strategy == strategyPlain))
+			plan.PathGens[i].mode == ExplorationGuided)
 	if incrementalCapable {
 		gen := plan.PathGens[i]
 		seq := gen.sequence()
@@ -224,8 +224,9 @@ func runExecutionContext(runCtx context.Context, backend testBackend, rep *repor
 		}).Run(runCtx)
 	}
 	if i < len(plan.PathGens) && plan.PathGens[i] != nil {
-		// ExploreCoverage/ExploreSmart still materialize via ForEach until a later change extends
-		// sequence()/bounds() to those two guided strategies (see path_generator.go).
+		// Unreachable now that incrementalCapable covers every ExplorationMode value (Cartesian,
+		// Sampling, and all three ExplorationGuided strategies) — kept until a later change removes
+		// this ForEach/[]PathValues batch fallback entirely and closes #43.
 		paths := make([]PathValues, 0)
 		plan.PathGens[i].ForEach(func(path PathValues) { paths = append(paths, path.clone()) })
 		next := 0
