@@ -202,7 +202,25 @@ func runExecutionContext(runCtx context.Context, backend testBackend, rep *repor
 		return proposalControllerResult{}
 	}
 	program := plan.Instructions[start : start+length]
+	if i < len(plan.PathGens) && plan.PathGens[i] != nil && plan.PathGens[i].mode == CartesianMode {
+		gen := plan.PathGens[i]
+		seq := gen.sequence()
+		maxAttempts, maxAccepted, maxRejections := gen.bounds()
+		return newProposalController(proposalControllerConfig{
+			MaxAttempts:   maxAttempts,
+			MaxAccepted:   maxAccepted,
+			MaxRejections: maxRejections,
+			Propose:       seq.next,
+			Execute: func(candidate proposalCandidate) bool {
+				passed := !runIsolatedCase(backend, program, candidate.Values).Failed
+				seq.admitFeedback(candidate.Values, passed)
+				return passed
+			},
+		}).Run(runCtx)
+	}
 	if i < len(plan.PathGens) && plan.PathGens[i] != nil {
+		// Sample and Explore/ExploreCoverage/ExploreSmart still materialize via ForEach until a
+		// later change extends sequence()/bounds() to those strategies (see path_generator.go).
 		paths := make([]PathValues, 0)
 		plan.PathGens[i].ForEach(func(path PathValues) { paths = append(paths, path.clone()) })
 		next := 0

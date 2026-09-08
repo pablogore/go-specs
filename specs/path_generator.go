@@ -225,9 +225,10 @@ func newPathGenerator(vars []PathVar, filters []PathFilter, samples int, seed in
 // PathIterator walks the Cartesian product using a single mutable index (odometer style).
 // Use Iterator() for CartesianMode to avoid per-path allocations; Index() is the current position.
 type PathIterator struct {
-	dims  []int
-	index []int
-	done  bool
+	dims    []int
+	index   []int
+	started bool
+	done    bool
 }
 
 // Iterator returns a zero-allocation Cartesian iterator for CartesianMode with no filters, or nil otherwise.
@@ -247,9 +248,21 @@ func (g *PathGenerator) Iterator() *PathIterator {
 }
 
 // Next advances to the next combination (odometer style). Returns false when all combinations have been visited.
+// The first call yields the zero index (the first combination) without advancing it; every
+// call after that advances the odometer before reporting whether a combination remains.
 func (it *PathIterator) Next() bool {
 	if it == nil || it.done {
 		return false
+	}
+	if !it.started {
+		it.started = true
+		for _, d := range it.dims {
+			if d == 0 {
+				it.done = true
+				return false
+			}
+		}
+		return true
 	}
 	for i := len(it.index) - 1; i >= 0; i-- {
 		it.index[i]++
@@ -284,6 +297,137 @@ func (g *PathGenerator) FillPathValues(index []int, pv *PathValues) {
 		pv.present[dim.idx] = true
 		pv.values[dim.idx] = dim.valueAt(index[dimIdx])
 	}
+}
+
+// pathSequence drives a PathGenerator one candidate at a time, replacing the ForEach-into-slice
+// materialization that runExecutionContext used to do before the bounded controller ever saw a
+// candidate. next() must do generation work only — it never depends on, or is influenced by, the
+// result of executing a previously proposed candidate. admitFeedback reports that result back to
+// the generator afterward, so guided strategies can update corpus/novelty state only once the
+// real case has actually run.
+//
+// Only CartesianMode is supported so far; Sample and Explore/ExploreCoverage/ExploreSmart still
+// go through ForEach until a later change extends sequence()/bounds() to those strategies.
+type pathSequence struct {
+	g       *PathGenerator
+	done    bool
+	trivial bool // no vars, or every var collapsed to zero dims: yields exactly one empty PathValues
+
+	it *PathIterator // Cartesian, no filters
+
+	indexes []int // Cartesian with filters: odometer state, mirrors enumerate()
+	started bool
+}
+
+// sequence returns a pathSequence for g. Panics if g uses a mode sequence() doesn't support yet.
+func (g *PathGenerator) sequence() *pathSequence {
+	seq := &pathSequence{g: g}
+	if g == nil || len(g.vars) == 0 || len(g.index) == 0 {
+		seq.trivial = true
+		return seq
+	}
+	if g.mode != CartesianMode {
+		panic("specs: PathGenerator.sequence supports CartesianMode only; Sample/Explore land in a later change")
+	}
+	if len(g.filters) == 0 {
+		seq.it = g.Iterator()
+		return seq
+	}
+	seq.indexes = make([]int, len(g.dims))
+	return seq
+}
+
+// next proposes the next candidate, or (PathValues{}, false) once the space is exhausted.
+func (s *pathSequence) next() (PathValues, bool) {
+	if s == nil || s.done {
+		return PathValues{}, false
+	}
+	if s.trivial {
+		s.done = true
+		return PathValues{}, true
+	}
+	if s.it != nil {
+		if !s.it.Next() {
+			s.done = true
+			return PathValues{}, false
+		}
+		var pv PathValues
+		s.g.FillPathValues(s.it.Index(), &pv)
+		return pv, true
+	}
+	return s.nextFiltered()
+}
+
+// nextFiltered mirrors enumerate()'s odometer, yielding one allowed combination per call instead
+// of visiting the whole space up front.
+func (s *pathSequence) nextFiltered() (PathValues, bool) {
+	g := s.g
+	if len(g.dims) == 0 {
+		if s.started {
+			s.done = true
+			return PathValues{}, false
+		}
+		s.started = true
+		var pv PathValues
+		pv.reset(g.index)
+		if !g.allow(pv) {
+			s.done = true
+			return PathValues{}, false
+		}
+		return pv, true
+	}
+	for {
+		if s.started {
+			if !s.advance() {
+				s.done = true
+				return PathValues{}, false
+			}
+		}
+		s.started = true
+		var pv PathValues
+		pv.reset(g.index)
+		for dimIdx, dim := range g.dims {
+			pv.present[dim.idx] = true
+			pv.values[dim.idx] = dim.valueAt(s.indexes[dimIdx])
+		}
+		if g.allow(pv) {
+			return pv, true
+		}
+	}
+}
+
+func (s *pathSequence) advance() bool {
+	for carry := len(s.indexes) - 1; carry >= 0; carry-- {
+		s.indexes[carry]++
+		if s.indexes[carry] < s.g.dims[carry].len() {
+			return true
+		}
+		s.indexes[carry] = 0
+	}
+	return false
+}
+
+// admitFeedback reports the real outcome of executing candidate back to the generator. It is a
+// no-op for Cartesian (and, once implemented, Sample): neither strategy has feedback-dependent
+// state. Explore/ExploreCoverage/ExploreSmart will use it to move corpus/seen-state growth to
+// after the real case runs, once those strategies gain sequence() support.
+func (s *pathSequence) admitFeedback(candidate PathValues, passed bool) {}
+
+// bounds returns conservative (never-underestimating) MaxAttempts/MaxAccepted/MaxRejections
+// upper bounds for proposalControllerConfig, computed without generating a single candidate.
+// Panics if g uses a mode sequence()/bounds() doesn't support yet.
+func (g *PathGenerator) bounds() (maxAttempts, maxAccepted, maxRejections int) {
+	if g == nil || len(g.vars) == 0 || len(g.index) == 0 {
+		return 1, 1, 1
+	}
+	if g.mode != CartesianMode {
+		panic("specs: PathGenerator.bounds supports CartesianMode only; Sample/Explore land in a later change")
+	}
+	total := 1
+	for _, dim := range g.dims {
+		total *= dim.len()
+	}
+	return total, total, total
 }
 
 // ForEach iterates over every allowed combination in declaration order.
@@ -406,13 +550,16 @@ func (g *PathGenerator) runExploration(fn func(PathValues)) {
 //
 // Real coverage-guided corpus growth needs ctx.coverage populated with genuine assertion-level
 // edge data on every iteration, which requires wiring the runner to set it per path iteration —
-// not yet done (tracked separately; PathGenerator.ForEach itself isn't invoked by the top-level
-// Describe execution path today either, a larger pre-existing gap — see the 8 tests skipped
-// "paths combinatorial execution with top-level Describe deferred to post-v1.0.0" in
-// paths_test.go). Until real coverage feedback exists, corpus growth uses the same call-site-
-// signature novelty heuristic the plain strategy already uses (captureSignature) as an honest,
-// documented proxy — good enough to give NextInput something to mutate from instead of always
-// falling back to fully random input, but not genuine coverage-guided selection.
+// not yet done. Cartesian dispatch from the top-level Describe execution path is incremental
+// (runExecutionContext drives it through PathGenerator.sequence(), one candidate at a time, only
+// admitting feedback after the real case has run); Sampling and ExplorationGuided — this method
+// included — still go through this ForEach-driven path, fully generated before the runner
+// executes a single case, so corpus growth here still can't depend on a real per-iteration
+// result. Until sequence()/admitFeedback() cover these strategies too, corpus growth uses the
+// same call-site-signature novelty heuristic the plain strategy already uses (captureSignature)
+// as an honest, documented proxy — good enough to give NextInput something to mutate from
+// instead of always falling back to fully random input, but not genuine coverage-guided
+// selection.
 func (g *PathGenerator) runGuidedExploration(fn func(PathValues), nextInput func(*PathGenerator) PathValues, corpus *Corpus) {
 	executed := 0
 	for executed < g.iterations {

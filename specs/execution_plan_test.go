@@ -190,6 +190,53 @@ func TestDescribePathsDispatchHonorsCancellationAndDeadline(t *testing.T) {
 	}
 }
 
+// TestRunExecutionContextCartesianDoesNotMaterializeUnderCancellation would fail against the old
+// ForEach-into-slice materialization: that approach generated every candidate (running filters
+// for all of them) before the controller ever got a chance to observe an already-canceled ctx.
+func TestRunExecutionContextCartesianDoesNotMaterializeUnderCancellation(t *testing.T) {
+	var considered int
+	gen := newPathGenerator([]PathVar{{Name: "value", rangeSpec: &intRange{min: 0, max: 999}}},
+		[]PathFilter{func(PathValues) bool { considered++; return true }}, 0, 0, false, 0, 0, 0)
+	plan := &ExecutionPlan{
+		Instructions: []Instruction{{Code: OpBody, Fn: func(*Context) { t.Fatal("body must not run") }}},
+		ProgramStart: []int{0}, ProgramLen: []int{1}, PathGens: []*PathGenerator{gen},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	result := runExecutionContext(ctx, &controlledBackend{}, nil, plan, 0)
+	if result.Terminal != proposalTerminalCanceled {
+		t.Fatalf("terminal = %v, want canceled", result.Terminal)
+	}
+	if considered != 0 {
+		t.Fatalf("candidates considered before the controller observed cancellation = %d, want 0", considered)
+	}
+}
+
+// TestRunExecutionContextCartesianStopsGeneratingOnCancelMidRun proves cancellation stops
+// generation immediately rather than only stopping dispatch of an already-generated candidate:
+// canceling from inside the first executed case must prevent a second candidate from ever being
+// proposed.
+func TestRunExecutionContextCartesianStopsGeneratingOnCancelMidRun(t *testing.T) {
+	var considered, executed int
+	ctx, cancel := context.WithCancel(context.Background())
+	gen := newPathGenerator([]PathVar{{Name: "value", rangeSpec: &intRange{min: 0, max: 999}}},
+		[]PathFilter{func(PathValues) bool { considered++; return true }}, 0, 0, false, 0, 0, 0)
+	plan := &ExecutionPlan{
+		Instructions: []Instruction{{Code: OpBody, Fn: func(*Context) { executed++; cancel() }}},
+		ProgramStart: []int{0}, ProgramLen: []int{1}, PathGens: []*PathGenerator{gen},
+	}
+	result := runExecutionContext(ctx, &controlledBackend{}, nil, plan, 0)
+	if result.Terminal != proposalTerminalCanceled {
+		t.Fatalf("terminal = %v, want canceled", result.Terminal)
+	}
+	if executed != 1 {
+		t.Fatalf("executed = %d, want exactly 1 (canceled from inside the first case)", executed)
+	}
+	if considered != 1 {
+		t.Fatalf("candidates considered = %d, want 1 — generation must not run ahead of execution", considered)
+	}
+}
+
 func TestGeneratedFatalUsesRealSubtestBoundary(t *testing.T) {
 	if os.Getenv("GO_SPECS_FATAL_BOUNDARY_HELPER") == "1" {
 		var afterRuns int
