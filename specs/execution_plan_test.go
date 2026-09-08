@@ -332,6 +332,99 @@ func TestRunExecutionContextExploreStopsGeneratingOnCancelMidRun(t *testing.T) {
 	}
 }
 
+// TestRunExecutionContextCoverageDoesNotMaterializeUnderCancellation is ExploreCoverage's
+// counterpart to TestRunExecutionContextCartesianDoesNotMaterializeUnderCancellation: proves
+// runExecutionContext no longer routes strategyCoverage ExplorationGuided through the ForEach/
+// []PathValues fallback, which would have generated every iteration (and run every filter) before
+// the controller ever observed cancellation.
+func TestRunExecutionContextCoverageDoesNotMaterializeUnderCancellation(t *testing.T) {
+	var considered int
+	gen := newPathGenerator([]PathVar{{Name: "value", rangeSpec: &intRange{min: 0, max: 999}}},
+		[]PathFilter{func(PathValues) bool { considered++; return true }}, 0, 0, false, 0, 5, 0)
+	plan := &ExecutionPlan{
+		Instructions: []Instruction{{Code: OpBody, Fn: func(*Context) { t.Fatal("body must not run") }}},
+		ProgramStart: []int{0}, ProgramLen: []int{1}, PathGens: []*PathGenerator{gen},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	result := runExecutionContext(ctx, &controlledBackend{}, nil, plan, 0)
+	if result.Terminal != proposalTerminalCanceled {
+		t.Fatalf("terminal = %v, want canceled", result.Terminal)
+	}
+	if considered != 0 {
+		t.Fatalf("candidates considered before the controller observed cancellation = %d, want 0", considered)
+	}
+}
+
+// TestRunExecutionContextCoverageStopsGeneratingOnCancelMidRun is ExploreCoverage's counterpart to
+// TestRunExecutionContextCartesianStopsGeneratingOnCancelMidRun. Unlike Explore's nextExplore,
+// nextGuided has no separate seed step (runGuidedExploration doesn't have one either), so
+// considered == 1 here, not 2.
+func TestRunExecutionContextCoverageStopsGeneratingOnCancelMidRun(t *testing.T) {
+	var considered, executed int
+	ctx, cancel := context.WithCancel(context.Background())
+	gen := newPathGenerator([]PathVar{{Name: "value", rangeSpec: &intRange{min: 0, max: 999}}},
+		[]PathFilter{func(PathValues) bool { considered++; return true }}, 0, 0, false, 0, 5, 0)
+	plan := &ExecutionPlan{
+		Instructions: []Instruction{{Code: OpBody, Fn: func(*Context) { executed++; cancel() }}},
+		ProgramStart: []int{0}, ProgramLen: []int{1}, PathGens: []*PathGenerator{gen},
+	}
+	result := runExecutionContext(ctx, &controlledBackend{}, nil, plan, 0)
+	if result.Terminal != proposalTerminalCanceled {
+		t.Fatalf("terminal = %v, want canceled", result.Terminal)
+	}
+	if executed != 1 {
+		t.Fatalf("executed = %d, want exactly 1 (canceled from inside the first case)", executed)
+	}
+	if considered != 1 {
+		t.Fatalf("candidates considered = %d, want 1 — generation must not run ahead of execution", considered)
+	}
+}
+
+// TestRunExecutionContextSmartDoesNotMaterializeUnderCancellation is ExploreSmart's counterpart to
+// TestRunExecutionContextCartesianDoesNotMaterializeUnderCancellation.
+func TestRunExecutionContextSmartDoesNotMaterializeUnderCancellation(t *testing.T) {
+	var considered int
+	gen := newPathGenerator([]PathVar{{Name: "value", rangeSpec: &intRange{min: 0, max: 999}}},
+		[]PathFilter{func(PathValues) bool { considered++; return true }}, 0, 0, false, 0, 0, 5)
+	plan := &ExecutionPlan{
+		Instructions: []Instruction{{Code: OpBody, Fn: func(*Context) { t.Fatal("body must not run") }}},
+		ProgramStart: []int{0}, ProgramLen: []int{1}, PathGens: []*PathGenerator{gen},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	result := runExecutionContext(ctx, &controlledBackend{}, nil, plan, 0)
+	if result.Terminal != proposalTerminalCanceled {
+		t.Fatalf("terminal = %v, want canceled", result.Terminal)
+	}
+	if considered != 0 {
+		t.Fatalf("candidates considered before the controller observed cancellation = %d, want 0", considered)
+	}
+}
+
+// TestRunExecutionContextSmartStopsGeneratingOnCancelMidRun is ExploreSmart's counterpart to
+// TestRunExecutionContextCartesianStopsGeneratingOnCancelMidRun.
+func TestRunExecutionContextSmartStopsGeneratingOnCancelMidRun(t *testing.T) {
+	var considered, executed int
+	ctx, cancel := context.WithCancel(context.Background())
+	gen := newPathGenerator([]PathVar{{Name: "value", rangeSpec: &intRange{min: 0, max: 999}}},
+		[]PathFilter{func(PathValues) bool { considered++; return true }}, 0, 0, false, 0, 0, 5)
+	plan := &ExecutionPlan{
+		Instructions: []Instruction{{Code: OpBody, Fn: func(*Context) { executed++; cancel() }}},
+		ProgramStart: []int{0}, ProgramLen: []int{1}, PathGens: []*PathGenerator{gen},
+	}
+	result := runExecutionContext(ctx, &controlledBackend{}, nil, plan, 0)
+	if result.Terminal != proposalTerminalCanceled {
+		t.Fatalf("terminal = %v, want canceled", result.Terminal)
+	}
+	if executed != 1 {
+		t.Fatalf("executed = %d, want exactly 1 (canceled from inside the first case)", executed)
+	}
+	if considered != 1 {
+		t.Fatalf("candidates considered = %d, want 1 — generation must not run ahead of execution", considered)
+	}
+}
+
 func TestGeneratedFatalUsesRealSubtestBoundary(t *testing.T) {
 	if os.Getenv("GO_SPECS_FATAL_BOUNDARY_HELPER") == "1" {
 		var afterRuns int
