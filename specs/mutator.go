@@ -61,17 +61,16 @@ func (m *Mutator) MutateInt(v, min, max int) int {
 
 // Mutate returns a clone of p with one random dimension mutated.
 // For int/int64 dimensions with a range, MutateInt is used and the result is clamped to generator
-// bounds. Other dimensions (bool, discrete values, unranged int/int64) are left unchanged — this
-// call can be a no-op if the randomly picked dimension isn't a ranged int/int64. See #9's follow-up
-// issue for tracking that gap.
+// bounds. bool dimensions are always negated (guaranteed to change). Discrete dimensions (unranged
+// int/int64, or .Values) are re-picked from the dimension's own value set via DimensionValues —
+// same as PathGenerator.mutate's discrete case, this may coincidentally land back on the same value.
 //
 // This is the mutation strategy behind PathSpec.ExploreCoverage/ExploreSmart (via CoverageExplorer/
 // SmartExplorer). PathSpec.Explore uses a different, unexported strategy (PathGenerator.mutate in
-// path_generator.go) that has an explicit mutation path for bool and discrete dimensions too (bool
-// is always flipped; a discrete re-pick may coincidentally land on the same value), at the cost of
-// not sharing this type's int-mutation operators (bit-flip, ×2/÷2, etc. — see MutateInt). The two
-// aren't meant to be interchangeable: each backs a distinct public exploration mode, evolved
-// independently rather than consolidated, per the discussion on #9.
+// path_generator.go) that mutates bool/discrete dimensions the same way, at the cost of not sharing
+// this type's int-mutation operators (bit-flip, ×2/÷2, etc. — see MutateInt). The two aren't meant
+// to be interchangeable: each backs a distinct public exploration mode, evolved independently rather
+// than consolidated, per the discussion on #9.
 func (m *Mutator) Mutate(gen *PathGenerator, p PathValues) PathValues {
 	if m == nil || m.rng == nil || gen == nil {
 		return p.clone()
@@ -90,23 +89,29 @@ func (m *Mutator) Mutate(gen *PathGenerator, p PathValues) PathValues {
 	min, max, hasRange := gen.DimensionBounds(dim)
 
 	switch v := val.(type) {
+	case bool:
+		out.values[idx] = !v
+		out.present[idx] = true
 	case int:
 		if hasRange {
 			out.values[idx] = m.MutateInt(v, min, max)
-		} else {
-			out.values[idx] = v
+		} else if values := gen.DimensionValues(dim); len(values) > 0 {
+			out.values[idx] = values[m.rng.Intn(len(values))]
 		}
 		out.present[idx] = true
 	case int64:
 		if hasRange {
 			mi, ma := int(min), int(max)
 			out.values[idx] = int64(m.MutateInt(int(v), mi, ma))
-		} else {
-			out.values[idx] = v
+		} else if values := gen.DimensionValues(dim); len(values) > 0 {
+			out.values[idx] = values[m.rng.Intn(len(values))]
 		}
 		out.present[idx] = true
 	default:
-		// discrete or non-int: leave unchanged (no bounds to clamp to)
+		if values := gen.DimensionValues(dim); len(values) > 0 {
+			out.values[idx] = values[m.rng.Intn(len(values))]
+		}
+		out.present[idx] = true
 	}
 	return out
 }

@@ -950,6 +950,22 @@ func (g *PathGenerator) DimensionBounds(dim int) (min, max int, hasRange bool) {
 	return d.rangeMin, d.rangeMax, true
 }
 
+// DimensionValues returns a copy of dimension dim's discrete value set, for dimensions that don't
+// have an int range (DimensionBounds's hasRange false) — e.g. .Bool, .Int(name, []int{...}), or
+// .Values. Returns nil if dim is out of range or the dimension uses an int range instead.
+func (g *PathGenerator) DimensionValues(dim int) []any {
+	if g == nil || dim < 0 || dim >= len(g.dims) {
+		return nil
+	}
+	d := g.dims[dim]
+	if d.hasRange {
+		return nil
+	}
+	out := make([]any, len(d.values))
+	copy(out, d.values)
+	return out
+}
+
 // ForEachShrinkCandidate calls fn for each candidate PathValues with dimension dimIdx
 // shrunk via the dimension's value shrinker. Only candidates that pass the generator's
 // filters are passed to fn. If fn returns false, iteration stops. pv is not modified.
