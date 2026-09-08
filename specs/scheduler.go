@@ -25,9 +25,8 @@ type parallelBackend struct {
 	results   *[]string
 	// abortOnFatal, when true, makes FailNow/Fatal/Fatalf panic(parallelAbort{}) after recording,
 	// so a fatal assertion stops the rest of the spec body — matching testing.T.FailNow's abort
-	// semantics. RunParallel's worker pool (runWorker/runWorkerBatched) leaves this false: a fatal
-	// assertion there records the failure but does not stop the spec (existing behavior, tracked
-	// separately). parallelStep (ItParallel, program.go) sets it true.
+	// semantics. Both parallelStep (ItParallel, program.go) and RunParallel's worker pool
+	// (runWorker/runWorkerBatched, via MinimalRunner.RunParallel/RunParallelBatched) set this true.
 	abortOnFatal bool
 }
 
@@ -106,9 +105,28 @@ func runWorker(specs []RunSpec, backend *parallelBackend, next *uint32, results 
 		backend.specIndex = idx
 		ctx.Reset(backend)
 		ctx.SetPathValues(PathValues{})
-		specs[idx].Fn(ctx)
+		runWorkerSpec(specs[idx].Fn, ctx, results, idx)
 		ctx.Reset(nil)
 	}
+}
+
+// runWorkerSpec runs one spec body, recovering the parallelAbort{} sentinel a fatal assertion
+// panics with when backend.abortOnFatal is set (see parallelBackend.FailNow/Fatal/Fatalf) — an
+// expected stop, already recorded in results[idx], not a failure to report. Any other panic is
+// recorded as an ordinary spec failure instead of crashing the worker goroutine. Mirrors
+// parallelStep's per-spec recover in program.go, applied per spec here too so one spec's fatal
+// assertion or panic doesn't stop the worker from running the rest of its specs.
+func runWorkerSpec(fn func(*Context), ctx *Context, results *[]string, idx int) {
+	defer func() {
+		switch r := recover(); r {
+		case nil, parallelAbort{}:
+		default:
+			if (*results)[idx] == "" {
+				(*results)[idx] = fmt.Sprintf("panic: %v", r)
+			}
+		}
+	}()
+	fn(ctx)
 }
 
 // failureReporter is the minimal interface needed to report failures (avoids requiring full testing.TB in tests).

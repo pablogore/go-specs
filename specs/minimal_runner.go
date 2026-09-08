@@ -111,6 +111,7 @@ func (r *MinimalRunner) RunParallel(tb failureReporter, workers int) {
 	for i := range backends {
 		backends[i].results = &results
 		backends[i].specIndex = -1
+		backends[i].abortOnFatal = true
 	}
 
 	var next uint32
@@ -157,6 +158,7 @@ func (r *MinimalRunner) RunParallelBatched(tb failureReporter, workers int, chun
 	for i := range backends {
 		backends[i].results = &results
 		backends[i].specIndex = -1
+		backends[i].abortOnFatal = true
 	}
 
 	var next uint32

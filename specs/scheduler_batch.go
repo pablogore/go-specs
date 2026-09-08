@@ -16,7 +16,9 @@ const DefaultChunkSize = 16
 
 // runWorkerBatched runs specs in chunks. Each iteration claims [start, end) via
 // atomic.AddUint32(next, chunkSize); then runs specs[start:end] with one context Reset per chunk
-// (not per spec), reducing backend setup overhead. No allocations in the loop.
+// (not per spec), reducing backend setup overhead. A fatal assertion aborts only the spec that
+// raised it (see runWorkerSpec) — the chunk loop continues to the next spec. No allocations in
+// the loop.
 func runWorkerBatched(specs []RunSpec, backend *parallelBackend, next *uint32, results *[]string, chunkSize uint32) {
 	ctx := contextPool.Get().(*Context)
 	defer func() {
@@ -43,7 +45,7 @@ func runWorkerBatched(specs []RunSpec, backend *parallelBackend, next *uint32, r
 		for i := start; i < end; i++ {
 			idx := int(i)
 			backend.specIndex = idx
-			specs[idx].Fn(ctx)
+			runWorkerSpec(specs[idx].Fn, ctx, results, idx)
 		}
 		ctx.Reset(nil)
 	}
