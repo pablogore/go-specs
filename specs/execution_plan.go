@@ -180,11 +180,13 @@ func (s *CompiledSuite) run(tb testing.TB, runCtx context.Context) []proposalCon
 	if name == "" {
 		name = backend.Name()
 	}
-	s.Reporter.SuiteStarted(report.SuiteStartEvent{Name: name, Time: time.Now()})
+	suiteStart := time.Now()
+	s.Reporter.SuiteStarted(report.SuiteStartEvent{Name: name, Time: suiteStart})
 	results := runPlanFlatNoSubtests(runCtx, backend, counter, s.Plan)
 	s.Reporter.SuiteFinished(report.SuiteEndEvent{
 		Name:        name,
 		Time:        time.Now(),
+		Duration:    time.Since(suiteStart),
 		TotalSpecs:  counter.total,
 		FailedSpecs: counter.failed,
 	})
@@ -313,7 +315,7 @@ func reportSpecFinished(rep report.EventReporter, start report.SpecStartEvent, f
 	if rep == nil {
 		return
 	}
-	rep.SpecFinished(report.SpecResultEvent{SpecStartEvent: start, Failed: failed})
+	rep.SpecFinished(report.SpecResultEvent{SpecStartEvent: start, Failed: failed, Duration: time.Since(start.Time)})
 }
 
 // runProgram executes one spec's instructions directly in the caller's goroutine (the default,
