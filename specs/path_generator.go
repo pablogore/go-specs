@@ -10,6 +10,13 @@ import (
 const (
 	sampleVarName     = "sample"
 	defaultSampleSeed = int64(1)
+
+	// explorationMaxAttemptsMultiplier bounds total generation attempts (not just accepted
+	// candidates) across Sample, Explore, ExploreCoverage, and ExploreSmart: maxAttempts =
+	// requested budget (samples or iterations) * this multiplier. One shared, named constant
+	// so all four strategies enforce the same "requested budget -> max generation effort"
+	// policy instead of drifting apart with separate magic numbers.
+	explorationMaxAttemptsMultiplier = 100
 )
 
 // ExplorationMode defines how the generator produces values.
@@ -332,11 +339,16 @@ type pathSequence struct {
 	// time. exploreCorpus/exploreSeenSigs are local to this sequence rather than g.corpus/
 	// g.seenSigs — those remain owned by the ForEach/runPlainExploration path so a direct ForEach
 	// call and an incremental sequence() walk never share (and corrupt) the same corpus. The
-	// filter-retry loop is internal to nextExplore, same as nextSample.
-	exploreSeeded   bool
-	exploreExecuted int
-	exploreCorpus   []PathValues
-	exploreSeenSigs map[uint64]struct{}
+	// filter-retry loop is internal to nextExplore, same as nextSample. exploreAttempts/
+	// exploreMaxAttempts cap that internal retry loop the same way sampleAttempts/
+	// sampleMaxAttempts cap nextSample's — a restrictive-to-impossible filter must fail loudly
+	// instead of spinning forever (#18).
+	exploreSeeded      bool
+	exploreExecuted    int
+	exploreAttempts    int
+	exploreMaxAttempts int
+	exploreCorpus      []PathValues
+	exploreSeenSigs    map[uint64]struct{}
 
 	// ExploreCoverage/ExploreSmart: mirrors runGuidedExploration's state one call to next() at a
 	// time. Unlike exploreSeenSigs above, guidedSeenSigs is the only local copy needed — NextInput
@@ -346,8 +358,11 @@ type pathSequence struct {
 	// copy; there is no g.corpus-equivalent field to avoid contaminating for these two strategies.
 	// guidedSeenSigs stays local so a direct ForEach call and an incremental sequence() walk never
 	// share (and corrupt) the same signature set — same discipline as exploreSeenSigs vs g.seenSigs.
-	guidedExecuted int
-	guidedSeenSigs map[uint64]struct{}
+	// guidedAttempts/guidedMaxAttempts cap the internal retry loop, same reasoning as Explore (#18).
+	guidedExecuted    int
+	guidedAttempts    int
+	guidedMaxAttempts int
+	guidedSeenSigs    map[uint64]struct{}
 }
 
 // sequence returns a pathSequence for g, incremental for every ExplorationMode (Cartesian,
@@ -369,7 +384,7 @@ func (g *PathGenerator) sequence() *pathSequence {
 		return seq
 	case SamplingMode:
 		seq.sampleIdx, seq.hasSampleVar = g.index[sampleVarName]
-		seq.sampleMaxAttempts = g.samples * 100
+		seq.sampleMaxAttempts = g.samples * explorationMaxAttemptsMultiplier
 		if seq.sampleMaxAttempts < g.samples {
 			seq.sampleMaxAttempts = g.samples
 		}
@@ -378,12 +393,18 @@ func (g *PathGenerator) sequence() *pathSequence {
 		}
 		return seq
 	case ExplorationGuided:
+		maxAttempts := g.iterations * explorationMaxAttemptsMultiplier
+		if maxAttempts < g.iterations {
+			maxAttempts = g.iterations
+		}
 		switch g.strategy {
 		case strategyPlain:
 			seq.exploreCorpus = make([]PathValues, 0, g.iterations/10+1)
 			seq.exploreSeenSigs = make(map[uint64]struct{})
+			seq.exploreMaxAttempts = maxAttempts
 		case strategyCoverage, strategySmart:
 			seq.guidedSeenSigs = make(map[uint64]struct{})
+			seq.guidedMaxAttempts = maxAttempts
 		}
 		if g.iterations <= 0 {
 			seq.done = true
@@ -467,6 +488,12 @@ func (s *pathSequence) nextSample() (PathValues, bool) {
 // candidate plus the first accepted candidate from this loop. That's an existing, documented
 // heuristic limitation (see runGuidedExploration's doc comment), not something introduced here;
 // this method preserves it exactly rather than changing observable behavior.
+//
+// The filter-retry loop is capped by exploreAttempts/exploreMaxAttempts, same shape as
+// nextSample: a restrictive-to-impossible filter panics with a diagnostic message instead of
+// spinning forever (#18) — total attempts across the whole Explore run, not consecutive
+// rejections, since a filter that admits occasionally could reset a consecutive counter
+// indefinitely without ever tripping it.
 func (s *pathSequence) nextExplore() (PathValues, bool) {
 	g := s.g
 	if !s.exploreSeeded {
@@ -486,6 +513,13 @@ func (s *pathSequence) nextExplore() (PathValues, bool) {
 		return PathValues{}, false
 	}
 	for {
+		s.exploreAttempts++
+		if s.exploreAttempts > s.exploreMaxAttempts {
+			panic(fmt.Sprintf(
+				"specs: Explore could not satisfy filters after %d attempts (%d/%d iterations accepted); relax filters or reduce iterations",
+				s.exploreAttempts-1, s.exploreExecuted, g.iterations,
+			))
+		}
 		var candidate PathValues
 		if len(s.exploreCorpus) > 0 && g.rng.Float64() > 0.3 {
 			candidate = g.mutate(s.exploreCorpus[g.rng.Intn(len(s.exploreCorpus))])
@@ -512,6 +546,10 @@ func (s *pathSequence) nextExplore() (PathValues, bool) {
 // the proxy, not real per-iteration coverage, still drives corpus growth here. Unlike nextExplore,
 // there is no separate seed step: runGuidedExploration doesn't have one either, so growth caps at
 // exactly one corpus entry (the first accepted candidate) rather than two.
+//
+// The filter-retry loop is capped by guidedAttempts/guidedMaxAttempts, same reasoning as
+// nextExplore (#18): total attempts across the run, not consecutive rejections, and a diagnostic
+// panic instead of spinning forever.
 func (s *pathSequence) nextGuided() (PathValues, bool) {
 	g := s.g
 	if s.guidedExecuted >= g.iterations {
@@ -520,6 +558,7 @@ func (s *pathSequence) nextGuided() (PathValues, bool) {
 	}
 	var nextInput func(*PathGenerator) PathValues
 	var corpus *Corpus
+	strategyName := "ExploreCoverage"
 	switch g.strategy {
 	case strategyCoverage:
 		nextInput = g.coverageExplorer.NextInput
@@ -527,8 +566,16 @@ func (s *pathSequence) nextGuided() (PathValues, bool) {
 	case strategySmart:
 		nextInput = g.smartExplorer.NextInput
 		corpus = g.smartExplorer.corpus
+		strategyName = "ExploreSmart"
 	}
 	for {
+		s.guidedAttempts++
+		if s.guidedAttempts > s.guidedMaxAttempts {
+			panic(fmt.Sprintf(
+				"specs: %s could not satisfy filters after %d attempts (%d/%d iterations accepted); relax filters or reduce iterations",
+				strategyName, s.guidedAttempts-1, s.guidedExecuted, g.iterations,
+			))
+		}
 		candidate := nextInput(g)
 		if !g.allow(candidate) {
 			continue
