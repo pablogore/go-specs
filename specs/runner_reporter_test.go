@@ -2,6 +2,7 @@ package specs
 
 import (
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -214,6 +215,74 @@ func TestParallelStepWithObserverReportsEachSpecIndividually(t *testing.T) {
 	}
 	if obs.total != 3 || obs.failed != 1 {
 		t.Fatalf("expected observer to tally total=3 failed=1, got total=%d failed=%d", obs.total, obs.failed)
+	}
+}
+
+// TestParallelStepWithObserverPassesFailureStringStraightToMessage proves ItParallel's Message
+// comes straight from parallelBackend's already-recorded results[i] string (part of #13-C's scope:
+// ItParallel passes that string through as-is, with no reinterpretation), and that Output stays
+// empty — parallelBackend has no separable output source to draw one from.
+func TestParallelStepWithObserverPassesFailureStringStraightToMessage(t *testing.T) {
+	rep := &recordingReporter{}
+	obs := &reporterObserver{rep: rep}
+	backend := &capturingBackend{}
+	ctx := &Context{backend: backend, execObserver: obs}
+
+	run := parallelStep([]step{
+		runAll([]step{func(*Context) {}}),
+		runAll([]step{func(ctx *Context) { ctx.backend.Errorf("boom: %d", 42) }}),
+	}, []string{"p1", "p2"})
+	run(ctx)
+
+	if len(rep.specFinished) != 2 {
+		t.Fatalf("expected two SpecFinished, got %+v", rep.specFinished)
+	}
+	byName := map[string]report.SpecResultEvent{}
+	for _, e := range rep.specFinished {
+		byName[e.Name] = e
+	}
+	if got := byName["p1"]; got.Failed || got.Message != "" || got.Output != "" {
+		t.Errorf("expected p1 (passing) to have empty Message/Output, got %+v", got)
+	}
+	if got := byName["p2"]; !got.Failed || got.Message != "boom: 42" {
+		t.Errorf("expected p2's Message to be exactly the recorded failure string %q, got %+v", "boom: 42", got)
+	}
+	if got := byName["p2"]; got.Output != "" {
+		t.Errorf("expected p2's Output to stay empty (no separable output source in ItParallel), got %q", got.Output)
+	}
+}
+
+// TestRunSpecsRecoveredReportsPanicMessageAndOutput proves a recovered spec panic (the one sequential
+// failure path that still reaches specFinished today — see specResult's doc comment) reports Message
+// as the short "panic: value" summary and Output as the panic's stack trace, built once and reused
+// for both the backend's Errorf call and the reported event — never reconstructed a second time.
+func TestRunSpecsRecoveredReportsPanicMessageAndOutput(t *testing.T) {
+	rep := &recordingReporter{}
+	obs := &reporterObserver{rep: rep}
+	backend := &controlledBackend{}
+	ctx := &Context{backend: backend, execObserver: obs}
+	g := &group{
+		specs: []step{func(*Context) { panic("boom") }},
+		names: []string{"panics"},
+	}
+
+	runSpecsRecovered(ctx, g)
+
+	if len(rep.specFinished) != 1 {
+		t.Fatalf("expected one SpecFinished, got %+v", rep.specFinished)
+	}
+	got := rep.specFinished[0]
+	if !got.Failed {
+		t.Fatalf("expected the panicking spec to be reported as failed, got %+v", got)
+	}
+	if got.Message != "panic: boom" {
+		t.Errorf("expected Message %q, got %q", "panic: boom", got.Message)
+	}
+	if !strings.Contains(got.Output, "runStepRecovered") {
+		t.Errorf("expected Output to contain a stack trace naming runStepRecovered, got %q", got.Output)
+	}
+	if len(backend.errors) != 1 || backend.errors[0] != got.Message+"\n"+got.Output {
+		t.Fatalf("expected backend.Errorf to receive exactly message+\"\\n\"+output, got %v", backend.errors)
 	}
 }
 
