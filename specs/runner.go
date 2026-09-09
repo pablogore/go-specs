@@ -120,12 +120,11 @@ func runSpecsRecovered(ctx *Context, specs []step) {
 }
 
 // runAfterRecovered runs a group's after hooks in reverse order, recovering each individually.
+// Unlike before/specs, this does not check FailFast between hooks: FailFast decides whether we run
+// more specs/groups, not whether we leave resources uncleaned. Every after hook always runs.
 func runAfterRecovered(ctx *Context, after []step) {
 	for i := len(after) - 1; i >= 0; i-- {
 		runStepRecovered(ctx, after[i], "panic in after hook")
-		if ctx.failFast && ctx.failed {
-			return
-		}
 	}
 }
 

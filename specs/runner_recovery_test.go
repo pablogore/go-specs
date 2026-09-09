@@ -105,6 +105,39 @@ func TestRunGroupAfterHookPanicDoesNotStopSiblingAfterHooks(t *testing.T) {
 	}
 }
 
+// TestRunGroupAfterHookPanicDoesNotStopSiblingAfterHooksUnderFailFast proves that FailFast does not
+// leak into after-hook execution: FailFast decides whether we run more specs/groups, not whether we
+// leave resources uncleaned. Even with FailFast on and the first-executed after hook panicking (which
+// sets ctx.failed), the remaining after hooks in this group must still run.
+func TestRunGroupAfterHookPanicDoesNotStopSiblingAfterHooksUnderFailFast(t *testing.T) {
+	backend := &controlledBackend{}
+	ctx := &Context{backend: backend}
+	ctx.SetFailFast(true)
+	var secondRan bool
+	// after runs in reverse order (index len-1 down to 0), so the second element here runs first.
+	g := &group{
+		specs: []step{func(*Context) {}},
+		after: []step{
+			func(*Context) { secondRan = true },
+			func(*Context) { panic("after boom") },
+		},
+	}
+	runGroup(ctx, g)
+
+	if !secondRan {
+		t.Fatal("expected the sibling after hook to run despite FailFast and the first-executed one panicking")
+	}
+	found := false
+	for _, e := range backend.errors {
+		if strings.Contains(e, "after boom") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected the after-hook panic to be recorded as a failure, got %v", backend.errors)
+	}
+}
+
 // TestRunGroupFailFastStopsRemainingSpecsButAfterStillRuns proves the contract decided for #62: a
 // panic counts as ctx.failed (via ctx.recordFailure), so FailFast's existing stop-at-the-next-check
 // logic naturally stops the remaining specs in the group — but after still runs regardless, via defer.
