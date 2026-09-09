@@ -23,6 +23,7 @@ const (
 // specItem is one registered spec (or skip). Before/after enable coalescing; hookKey identifies the scope set.
 type specItem struct {
 	kind    specKind
+	name    string // the It/ItParallel name, for SpecStartEvent.Name; "" for skip (its steps are dropped anyway)
 	before  []step
 	spec    step // single spec body; nil for skip
 	after   []step
@@ -146,6 +147,7 @@ func (b *Builder) It(name string, fn interface{}) {
 	b.ensureScope()
 	b.pending = append(b.pending, specItem{
 		kind:    kindNormal,
+		name:    name,
 		before:  b.emitBefore(),
 		spec:    step(f),
 		after:   b.emitAfter(),
@@ -168,6 +170,7 @@ func (b *Builder) FIt(name string, fn func(*Context)) {
 	b.hasFocus = true
 	b.pending = append(b.pending, specItem{
 		kind:    kindFocus,
+		name:    name,
 		before:  b.emitBefore(),
 		spec:    step(fn),
 		after:   b.emitAfter(),
@@ -186,7 +189,7 @@ func (b *Builder) ItParallel(name string, fn func(*Context)) {
 		return
 	}
 	b.ensureScope()
-	b.pending = append(b.pending, specItem{kind: kindParallel, steps: b.emitSpecSteps(fn)})
+	b.pending = append(b.pending, specItem{kind: kindParallel, name: name, steps: b.emitSpecSteps(fn)})
 }
 
 // hookKey returns a key that uniquely identifies the current scope stack and hook set.
@@ -228,20 +231,27 @@ func (b *Builder) finalize() {
 		if it.kind == kindParallel {
 			curIdx = -1
 			parSteps := []step{runAll(it.steps)}
+			parNames := []string{it.name}
 			j := i + 1
 			for j < len(items) && items[j].kind == kindParallel {
 				parSteps = append(parSteps, runAll(items[j].steps))
+				parNames = append(parNames, items[j].name)
 				j++
 			}
-			groups = append(groups, group{specs: []step{parallelStep(parSteps)}})
+			// names is left nil: this group's single spec is the synthetic parallelStep closure,
+			// which reports each real ItParallel spec itself (via ctx.execObserver) as it runs on
+			// its own goroutine. Runner.Run's sequential per-spec reporting only fires when names
+			// is populated, so it correctly stays out of the way here instead of double-reporting.
+			groups = append(groups, group{specs: []step{parallelStep(parSteps, parNames)}})
 			i = j - 1
 			continue
 		}
 		// normal or focus: coalesce if same hook set (same scope layout) as current group
 		if curIdx >= 0 && groups[curIdx].hookKey == it.hookKey {
 			groups[curIdx].specs = append(groups[curIdx].specs, it.spec)
+			groups[curIdx].names = append(groups[curIdx].names, it.name)
 		} else {
-			groups = append(groups, group{before: it.before, specs: []step{it.spec}, after: it.after, hookKey: it.hookKey})
+			groups = append(groups, group{before: it.before, specs: []step{it.spec}, names: []string{it.name}, after: it.after, hookKey: it.hookKey})
 			curIdx = len(groups) - 1
 		}
 	}

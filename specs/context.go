@@ -42,6 +42,11 @@ type Context struct {
 	failed bool
 	// failFast is set by Runner when FailFast is true; runner breaks after a step that set failed.
 	failFast bool
+	// execObserver, when non-nil, receives per-spec Started/Finished notifications from execution
+	// points that only have a Context to work with (e.g. a parallelStep goroutine, which has no
+	// Runner reference). Installed by Runner.Run only when it has a report.EventReporter; nil
+	// otherwise, so execution is unaffected without one.
+	execObserver specExecutionObserver
 }
 
 // NewContext builds a context for the given test/bench. Use *testing.T or *testing.B.
@@ -65,6 +70,7 @@ func (c *Context) Reset(backend testBackend) {
 	c.T = nil
 	c.coverage = nil
 	c.failed = false
+	c.execObserver = nil
 	if backend != nil {
 		// runnableBackend wraps the subtest T; unwrap so ctx.T points to the current subtest.
 		if r, ok := backend.(*runnableBackend); ok {

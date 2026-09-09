@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"sync/atomic"
 	"testing"
+
+	"github.com/pablogore/go-specs/report"
 )
 
 // parallelAbort is the sentinel panic value FailNow/Fatal/Fatalf use, when abortOnFatal is set, to
@@ -162,9 +164,33 @@ func RunShard(program *Program, tb testing.TB, shardIndex, shardCount int) {
 	if program == nil || tb == nil {
 		return
 	}
-	if shardCount <= 0 || shardIndex < 0 || shardIndex >= shardCount {
-		NewRunner(program).Run(tb)
+	prog, ok := shardProgram(program, shardIndex, shardCount)
+	if !ok {
 		return
+	}
+	NewRunner(prog).Run(tb)
+}
+
+// RunShardWithReporter is RunShard with reporting: the runner it builds for the shard's Program
+// reports SuiteStarted/SuiteFinished and SpecStarted/SpecFinished exactly as NewRunnerWithReporter's
+// Runner would, so SuiteEndEvent.TotalSpecs/FailedSpecs describe only the specs this shard actually
+// executed, not the full Program's total — the sharding itself is unchanged from RunShard.
+func RunShardWithReporter(program *Program, tb testing.TB, shardIndex, shardCount int, name string, rep report.EventReporter) {
+	if program == nil || tb == nil {
+		return
+	}
+	prog, ok := shardProgram(program, shardIndex, shardCount)
+	if !ok {
+		return
+	}
+	NewRunnerWithReporter(prog, name, rep).Run(tb)
+}
+
+// shardProgram returns the Program for one shard: its groups (sharded groups when shardCount is
+// valid, all groups otherwise), or ok=false if this shard has nothing to run.
+func shardProgram(program *Program, shardIndex, shardCount int) (prog *Program, ok bool) {
+	if shardCount <= 0 || shardIndex < 0 || shardIndex >= shardCount {
+		return program, true
 	}
 	groups := program.Groups
 	sharded := make([]group, 0, len(groups)/shardCount+1)
@@ -174,8 +200,7 @@ func RunShard(program *Program, tb testing.TB, shardIndex, shardCount int) {
 		}
 	}
 	if len(sharded) == 0 {
-		return
+		return nil, false
 	}
-	prog := &Program{Groups: sharded}
-	NewRunner(prog).Run(tb)
+	return &Program{Groups: sharded}, true
 }
