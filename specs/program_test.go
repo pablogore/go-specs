@@ -41,7 +41,7 @@ func TestProgram_DescribeBeforeEachIt(t *testing.T) {
 		b.BeforeEach(setup)
 		b.It("adds", testAdd)
 	})
-	prog := b.Program()
+	prog := b.Build()
 	if len(prog.Groups) != 1 || len(prog.Groups[0].before) != 1 || len(prog.Groups[0].specs) != 1 || len(prog.Groups[0].after) != 0 {
 		t.Fatalf("expected one group with before=1, specs=1, after=0; got %d groups", len(prog.Groups))
 	}
@@ -65,7 +65,7 @@ func TestProgram_GroupingBehavior(t *testing.T) {
 		b.It("add", testAdd)
 		b.It("sub", testSub)
 	})
-	prog := b.Program()
+	prog := b.Build()
 	if len(prog.Groups) != 1 {
 		t.Fatalf("expected 1 group; got %d", len(prog.Groups))
 	}
@@ -94,7 +94,7 @@ func TestProgram_NestedDescribeHooks(t *testing.T) {
 			b.It("b", func(*Context) { order = append(order, "it2") })
 		})
 	})
-	prog := b.Program()
+	prog := b.Build()
 	r := NewRunner(prog)
 	r.Run(t)
 	// Grouped: before once, all specs, after once (reverse)
@@ -114,13 +114,13 @@ func TestProgram_NestedDescribeHooks(t *testing.T) {
 func TestProgram_FlatAddBeforeAddSpecOrder(t *testing.T) {
 	var order []string
 	b := NewBuilder(32)
-	b.AddBefore(func(*Context) { order = append(order, "before1") })
-	b.AddBefore(func(*Context) { order = append(order, "before2") })
-	b.AddAfter(func(*Context) { order = append(order, "after1") })
-	b.AddAfter(func(*Context) { order = append(order, "after2") })
-	b.AddSpec(func(*Context) { order = append(order, "spec1") })
-	b.AddSpec(func(*Context) { order = append(order, "spec2") })
-	runner := NewRunnerFromProgram(b.Build())
+	b.BeforeEach(func(*Context) { order = append(order, "before1") })
+	b.BeforeEach(func(*Context) { order = append(order, "before2") })
+	b.AfterEach(func(*Context) { order = append(order, "after1") })
+	b.AfterEach(func(*Context) { order = append(order, "after2") })
+	b.It("", func(*Context) { order = append(order, "spec1") })
+	b.It("", func(*Context) { order = append(order, "spec2") })
+	runner := NewRunner(b.Build())
 	runner.Run(t)
 	// Grouped: before once, all specs, after once (reverse)
 	want := []string{
@@ -367,8 +367,8 @@ func TestProgram_ParallelGrouping(t *testing.T) {
 
 func TestProgram_FailFastStopsExecution(t *testing.T) {
 	b := NewBuilder()
-	b.AddSpec(func(ctx *Context) { EqualTo(ctx, 1, 1) })
-	b.AddSpec(func(ctx *Context) { EqualTo(ctx, 2, 2) })
+	b.It("", func(ctx *Context) { EqualTo(ctx, 1, 1) })
+	b.It("", func(ctx *Context) { EqualTo(ctx, 2, 2) })
 	prog := b.Build()
 	r := NewRunner(prog)
 	r.FailFast = true

@@ -5,20 +5,20 @@ import "testing"
 func TestCompiledRunner_OrderAndHooks(t *testing.T) {
 	var order []string
 	b := NewBuilder(32)
-	b.AddBefore(func(*Context) { order = append(order, "before1") })
-	b.AddBefore(func(*Context) { order = append(order, "before2") })
-	b.AddAfter(func(*Context) { order = append(order, "after1") })
-	b.AddAfter(func(*Context) { order = append(order, "after2") })
-	b.AddSpec(func(ctx *Context) {
+	b.BeforeEach(func(*Context) { order = append(order, "before1") })
+	b.BeforeEach(func(*Context) { order = append(order, "before2") })
+	b.AfterEach(func(*Context) { order = append(order, "after1") })
+	b.AfterEach(func(*Context) { order = append(order, "after2") })
+	b.It("", func(ctx *Context) {
 		order = append(order, "spec1")
 		EqualTo(ctx, 1, 1)
 	})
-	b.AddSpec(func(ctx *Context) {
+	b.It("", func(ctx *Context) {
 		order = append(order, "spec2")
 		EqualTo(ctx, 2, 2)
 	})
 	prog := b.Build()
-	runner := NewRunnerFromProgram(prog)
+	runner := NewRunner(prog)
 	runner.Run(t)
 
 	// Grouped execution: before once, all specs, after once (reverse)
@@ -37,8 +37,8 @@ func TestCompiledRunner_OrderAndHooks(t *testing.T) {
 
 func TestCompiledRunner_ZeroAllocs(t *testing.T) {
 	b := NewBuilder(8)
-	b.AddSpec(func(ctx *Context) { EqualTo(ctx, 42, 42) })
-	runner := NewRunnerFromProgram(b.Build())
+	b.It("", func(ctx *Context) { EqualTo(ctx, 42, 42) })
+	runner := NewRunner(b.Build())
 	var d testing.B
 	runner.Run(&d)
 	// Run should not allocate; check with go test -bench=BenchmarkRunner -benchmem

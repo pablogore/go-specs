@@ -35,7 +35,7 @@ type group struct {
 }
 
 // specName returns names[i], or "" when names doesn't cover index i (an unnamed spec, e.g. from
-// AddSpec, or a group that reports its own specs internally — see group.names).
+// It("", fn), or a group that reports its own specs internally — see group.names).
 func specName(names []string, i int) string {
 	if i < 0 || i >= len(names) {
 		return ""
