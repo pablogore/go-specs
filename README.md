@@ -4,6 +4,10 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/pablogore/go-specs)](https://goreportcard.com/report/github.com/pablogore/go-specs)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
+## Project status
+
+go-specs is pre-1.0 (`v0.x`). The public API (`Describe`, `It`, `Context`, `Expectation`, `Mutator`, etc.) is still settling and may change without notice between releases. Pin an exact version and check [CHANGELOG.md](CHANGELOG.md) before upgrading.
+
 ## Description
 
 **go-specs** is a fast, deterministic BDD-style testing framework for Go. It provides an expressive DSL for writing readable tests while staying close to the standard library and avoiding reflection and allocation overhead. By default, suites run sequentially in declaration order with no hidden concurrency, so test results are stable and reproducible; opt-in parallel execution (`ItParallel`, `RunParallel`, `RunParallelBatched`) is available where throughput matters.
