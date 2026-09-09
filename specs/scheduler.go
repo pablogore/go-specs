@@ -96,11 +96,8 @@ func (p *parallelBackend) Run(name string, fn func(testing.TB)) {
 // the whole worker lifetime; resets it per spec. Backend is the worker's dedicated parallelBackend.
 // No allocations in the loop: context from pool, backend is preallocated, specs slice is read-only.
 func runWorker(specs []RunSpec, backend *parallelBackend, next *uint32, results *[]string) {
-	ctx := contextPool.Get().(*Context)
-	defer func() {
-		ctx.Reset(nil)
-		contextPool.Put(ctx)
-	}()
+	ctx, release := acquireContext(backend)
+	defer release()
 
 	n := uint32(len(specs))
 	for {

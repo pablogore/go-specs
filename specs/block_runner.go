@@ -67,12 +67,8 @@ func (r *BlockRunner) Run(tb testing.TB) {
 	}
 	backend := asTestBackend(tb)
 	defer putTestBackend(backend)
-	ctx := contextPool.Get().(*Context)
-	defer func() {
-		ctx.Reset(nil)
-		contextPool.Put(ctx)
-	}()
-	ctx.Reset(backend)
+	ctx, release := acquireContext(backend)
+	defer release()
 	ctx.SetPathValues(PathValues{})
 
 	runBlocks(ctx, r.fns, r.blocks)

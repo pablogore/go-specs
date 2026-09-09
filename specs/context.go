@@ -11,13 +11,24 @@ import (
 )
 
 // contextPool reuses Context instances in the runner to reduce allocations.
-// The runner acquires with contextPool.Get().(*Context), calls Reset(backend), runs the spec,
-// then Reset(nil) to release references, and contextPool.Put(ctx). Do not retain Context
-// after Put; it may be reused.
+// Runners acquire via acquireContext(backend); do not retain a Context after releasing it back
+// to the pool, as it may be reused.
 var contextPool = sync.Pool{
 	New: func() any {
 		return &Context{}
 	},
+}
+
+// acquireContext gets a Context from contextPool, resets it for backend, and returns it along
+// with a release func that resets it again (to drop references) and returns it to the pool.
+// Callers should `defer release()` immediately.
+func acquireContext(backend testBackend) (*Context, func()) {
+	ctx := contextPool.Get().(*Context)
+	ctx.Reset(backend)
+	return ctx, func() {
+		ctx.Reset(nil)
+		contextPool.Put(ctx)
+	}
 }
 
 // expectationPool reuses Expectation instances for Expect(...).To() / ToEqual() to reduce allocations.
