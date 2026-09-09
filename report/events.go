@@ -12,6 +12,7 @@ type SuiteStartEvent struct {
 type SuiteEndEvent struct {
 	Name        string
 	Time        time.Time
+	Duration    time.Duration // elapsed time between this suite's SuiteStartEvent and this event
 	TotalSpecs  int
 	FailedSpecs int
 }
@@ -24,10 +25,15 @@ type SpecStartEvent struct {
 }
 
 // SpecResultEvent captures the result of an individual spec.
+//
+// SpecStartEvent is always the exact event this spec's SpecStarted call sent (same Time, not
+// reconstructed at finish time) — Duration is measured against it, so a producer that rebuilds
+// SpecStartEvent here instead of reusing the original would silently corrupt Duration too.
 type SpecResultEvent struct {
 	SpecStartEvent
-	Failed  bool
-	Message string
+	Failed   bool
+	Duration time.Duration // elapsed time between SpecStartEvent.Time and this event
+	Message  string
 }
 
 // EventReporter consumes structured events from the spec runner.

@@ -3,6 +3,7 @@ package specs
 import (
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/pablogore/go-specs/report"
 )
@@ -169,6 +170,37 @@ func TestDescribeWithReporterStopsAtFirstFailingCandidate(t *testing.T) {
 	}
 	if len(rep.suiteFinished) != 1 || rep.suiteFinished[0].FailedSpecs != 1 {
 		t.Fatalf("expected exactly one FailedSpecs, got %+v", rep.suiteFinished)
+	}
+}
+
+// TestDescribeWithReporterRecordsSpecAndSuiteDuration proves SpecFinished.Duration and
+// SuiteFinished.Duration measure real elapsed time, not a placeholder zero value: a spec that
+// deliberately sleeps reports a Duration at least as long as the sleep, and the enclosing suite's
+// Duration is at least the slept spec's. It also pins down the invariant Duration depends on:
+// SpecFinished.SpecStartEvent must be the exact event SpecStarted sent, not one rebuilt with
+// time.Now() at finish time — asserted here via the Time fields matching exactly.
+func TestDescribeWithReporterRecordsSpecAndSuiteDuration(t *testing.T) {
+	const sleep = 20 * time.Millisecond
+	rep := &recordingReporter{}
+	DescribeWithReporter(t, "DurationSuite", rep, func(s *Spec) {
+		s.It("slow", func(ctx *Context) { time.Sleep(sleep) })
+	})
+
+	if len(rep.specStarted) != 1 || len(rep.specFinished) != 1 {
+		t.Fatalf("expected one SpecStarted/SpecFinished pair, got started=%+v finished=%+v", rep.specStarted, rep.specFinished)
+	}
+	started, finished := rep.specStarted[0], rep.specFinished[0]
+	if !finished.Time.Equal(started.Time) {
+		t.Fatalf("expected SpecFinished.SpecStartEvent to be the exact SpecStarted event, got start=%v finish=%v", started.Time, finished.Time)
+	}
+	if finished.Duration < sleep {
+		t.Fatalf("expected spec Duration >= %v (the spec slept that long), got %v", sleep, finished.Duration)
+	}
+	if len(rep.suiteFinished) != 1 {
+		t.Fatalf("expected one SuiteFinished, got %+v", rep.suiteFinished)
+	}
+	if end := rep.suiteFinished[0]; end.Duration < sleep {
+		t.Fatalf("expected suite Duration >= %v (it wraps the slow spec), got %v", sleep, end.Duration)
 	}
 }
 

@@ -3,6 +3,7 @@ package specs
 import (
 	"sort"
 	"testing"
+	"time"
 
 	"github.com/pablogore/go-specs/report"
 )
@@ -46,6 +47,74 @@ func TestRunnerWithReporterEmitsSuiteAndSpecEvents(t *testing.T) {
 	end := rep.suiteFinished[0]
 	if end.Name != "Suite" || end.TotalSpecs != 2 || end.FailedSpecs != 1 {
 		t.Fatalf("expected Suite TotalSpecs=2 FailedSpecs=1, got %+v", end)
+	}
+}
+
+// TestRunnerWithReporterRecordsSpecAndSuiteDuration proves SpecFinished.Duration and
+// SuiteFinished.Duration measure real elapsed time (not a placeholder zero), and that
+// SpecFinished.SpecStartEvent is the exact event SpecStarted sent — the invariant Duration depends
+// on, since it's computed from that event's Time, not reconstructed at finish time.
+func TestRunnerWithReporterRecordsSpecAndSuiteDuration(t *testing.T) {
+	const sleep = 20 * time.Millisecond
+	rep := &recordingReporter{}
+	prog := BuildProgram(func(b *Builder) {
+		b.Describe("Suite", func() {
+			b.It("slow", func(ctx *Context) { time.Sleep(sleep) })
+		})
+	})
+
+	NewRunnerWithReporter(prog, "Suite", rep).Run(t)
+
+	if len(rep.specStarted) != 1 || len(rep.specFinished) != 1 {
+		t.Fatalf("expected one SpecStarted/SpecFinished pair, got started=%+v finished=%+v", rep.specStarted, rep.specFinished)
+	}
+	started, finished := rep.specStarted[0], rep.specFinished[0]
+	if !finished.Time.Equal(started.Time) {
+		t.Fatalf("expected SpecFinished.SpecStartEvent to be the exact SpecStarted event, got start=%v finish=%v", started.Time, finished.Time)
+	}
+	if finished.Duration < sleep {
+		t.Fatalf("expected spec Duration >= %v (the spec slept that long), got %v", sleep, finished.Duration)
+	}
+	if len(rep.suiteFinished) != 1 {
+		t.Fatalf("expected one SuiteFinished, got %+v", rep.suiteFinished)
+	}
+	if end := rep.suiteFinished[0]; end.Duration < sleep {
+		t.Fatalf("expected suite Duration >= %v (it wraps the slow spec), got %v", sleep, end.Duration)
+	}
+}
+
+// TestParallelStepWithObserverRecordsPerGoroutineDuration proves each ItParallel spec's Duration is
+// measured against its own goroutine's started event, not shared or reused across specs: only the
+// deliberately slow spec reports a Duration at least as long as the sleep, the fast siblings don't.
+func TestParallelStepWithObserverRecordsPerGoroutineDuration(t *testing.T) {
+	const sleep = 20 * time.Millisecond
+	rep := &recordingReporter{}
+	obs := &reporterObserver{rep: rep}
+	backend := &capturingBackend{}
+	ctx := &Context{backend: backend, execObserver: obs}
+
+	run := parallelStep([]step{
+		runAll([]step{func(*Context) {}}),
+		runAll([]step{func(*Context) { time.Sleep(sleep) }}),
+		runAll([]step{func(*Context) {}}),
+	}, []string{"fast1", "slow", "fast2"})
+	run(ctx)
+
+	if len(rep.specFinished) != 3 {
+		t.Fatalf("expected three SpecFinished, got %+v", rep.specFinished)
+	}
+	byName := map[string]time.Duration{}
+	for _, e := range rep.specFinished {
+		byName[e.Name] = e.Duration
+	}
+	if d, ok := byName["slow"]; !ok || d < sleep {
+		t.Fatalf("expected 'slow' Duration >= %v, got %v (all: %+v)", sleep, d, byName)
+	}
+	if d, ok := byName["fast1"]; !ok || d >= sleep {
+		t.Fatalf("expected 'fast1' Duration < %v, got %v (all: %+v)", sleep, d, byName)
+	}
+	if d, ok := byName["fast2"]; !ok || d >= sleep {
+		t.Fatalf("expected 'fast2' Duration < %v, got %v (all: %+v)", sleep, d, byName)
 	}
 }
 

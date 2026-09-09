@@ -70,7 +70,7 @@ func (o *reporterObserver) specFinished(start report.SpecStartEvent, failed bool
 	if failed {
 		o.failed++
 	}
-	o.rep.SpecFinished(report.SpecResultEvent{SpecStartEvent: start, Failed: failed})
+	o.rep.SpecFinished(report.SpecResultEvent{SpecStartEvent: start, Failed: failed, Duration: time.Since(start.Time)})
 }
 
 var _ specExecutionObserver = (*reporterObserver)(nil)
@@ -108,11 +108,13 @@ func (r *Runner) Run(tb testing.TB) {
 	}
 	obs := &reporterObserver{rep: r.Reporter}
 	ctx.execObserver = obs
-	r.Reporter.SuiteStarted(report.SuiteStartEvent{Name: name, Time: time.Now()})
+	suiteStart := time.Now()
+	r.Reporter.SuiteStarted(report.SuiteStartEvent{Name: name, Time: suiteStart})
 	runGroups(ctx, r.program.Groups)
 	r.Reporter.SuiteFinished(report.SuiteEndEvent{
 		Name:        name,
 		Time:        time.Now(),
+		Duration:    time.Since(suiteStart),
 		TotalSpecs:  obs.total,
 		FailedSpecs: obs.failed,
 	})
