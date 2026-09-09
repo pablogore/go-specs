@@ -1,15 +1,28 @@
-// runner.go executes a compiled Program. No hook resolution at runtime; no allocations in the loop.
+// runner.go executes a compiled Program. No hook resolution at runtime; no allocations in the loop
+// unless a Reporter is set.
 package specs
 
 import (
 	"runtime/debug"
+	"sync"
 	"testing"
+	"time"
+
+	"github.com/pablogore/go-specs/report"
 )
 
 // Runner runs a compiled Program against a test backend. One context from the pool, reused for every step.
 type Runner struct {
 	program  *Program
 	FailFast bool // if true, stop after the first step that sets ctx.failed (e.g. assertion failure)
+
+	// Name and Reporter are optional: when Reporter is nil, Run behaves exactly as it did before
+	// either field existed — no events, no extra work. When set, Run emits SuiteStarted before the
+	// program runs and SuiteFinished after, with SpecStarted/SpecFinished around every named spec
+	// (see group.names) — including each real spec inside an ItParallel group, reported from its own
+	// goroutine (see parallelStep). Name falls back to the backend's name if empty.
+	Name     string
+	Reporter report.EventReporter
 }
 
 // NewRunner creates a runner for the given program. Program must not be nil; do not modify program.Groups after creation.
@@ -22,8 +35,48 @@ func NewRunnerFromProgram(program *Program) *Runner {
 	return NewRunner(program)
 }
 
+// NewRunnerWithReporter creates a runner that reports SuiteStarted/SuiteFinished and
+// SpecStarted/SpecFinished events to rep as the program runs. name is used for
+// SuiteStartEvent/SuiteEndEvent.Name; if empty, the backend's name is used instead.
+func NewRunnerWithReporter(program *Program, name string, rep report.EventReporter) *Runner {
+	return &Runner{program: program, Name: name, Reporter: rep}
+}
+
+// reporterObserver adapts a report.EventReporter to specExecutionObserver, serializing calls with a
+// mutex: a parallel group's goroutines call specStarted/specFinished concurrently, and not every
+// EventReporter implementation can be assumed to be concurrency-safe on its own — the framework
+// serializes on its behalf instead of expanding EventReporter's contract to require it. total/failed
+// tally every reported spec (sequential and parallel alike, since both paths share one instance via
+// ctx.execObserver) for the run's SuiteEndEvent.
+type reporterObserver struct {
+	mu     sync.Mutex
+	rep    report.EventReporter
+	total  int
+	failed int
+}
+
+func (o *reporterObserver) specStarted(name string) report.SpecStartEvent {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	e := report.SpecStartEvent{Name: name, Time: time.Now()}
+	o.rep.SpecStarted(e)
+	return e
+}
+
+func (o *reporterObserver) specFinished(start report.SpecStartEvent, failed bool) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.total++
+	if failed {
+		o.failed++
+	}
+	o.rep.SpecFinished(report.SpecResultEvent{SpecStartEvent: start, Failed: failed})
+}
+
+var _ specExecutionObserver = (*reporterObserver)(nil)
+
 // Run executes all groups in order. Within each group: before once, all specs, then after once (reverse order).
-// Zero allocations in the loop; deterministic.
+// Zero allocations in the loop when Reporter is nil; deterministic.
 //
 // A panic in before, a spec, or an after hook is recovered instead of crashing the process — see
 // runGroup for the exact contract (which specs still run, whether after still runs).
@@ -44,7 +97,25 @@ func (r *Runner) Run(tb testing.TB) {
 		ctx.SetFailFast(true)
 	}
 
+	if r.Reporter == nil {
+		runGroups(ctx, r.program.Groups)
+		return
+	}
+
+	name := r.Name
+	if name == "" {
+		name = backend.Name()
+	}
+	obs := &reporterObserver{rep: r.Reporter}
+	ctx.execObserver = obs
+	r.Reporter.SuiteStarted(report.SuiteStartEvent{Name: name, Time: time.Now()})
 	runGroups(ctx, r.program.Groups)
+	r.Reporter.SuiteFinished(report.SuiteEndEvent{
+		Name:        name,
+		Time:        time.Now(),
+		TotalSpecs:  obs.total,
+		FailedSpecs: obs.failed,
+	})
 }
 
 // runGroups runs each group in order, stopping before the next group if FailFast is set and a
@@ -86,7 +157,7 @@ func runGroup(ctx *Context, g *group) {
 	if ctx.failFast && ctx.failed {
 		return
 	}
-	runSpecsRecovered(ctx, g.specs)
+	runSpecsRecovered(ctx, g)
 }
 
 // runBeforeRecovered runs a group's before hooks in order. Returns false if a panic stopped setup
@@ -110,10 +181,33 @@ func runBeforeRecovered(ctx *Context, before []step) (ok bool) {
 }
 
 // runSpecsRecovered runs a group's specs in order, recovering each one individually.
-func runSpecsRecovered(ctx *Context, specs []step) {
-	for _, s := range specs {
+//
+// ctx.failed is reset before every spec unconditionally — not gated on whether ctx.execObserver is
+// set — because gating it would make attaching a reporter change execution semantics; reporting must
+// stay purely observational. This also fixes a latent bug: without the reset, ctx.failed stuck true
+// after the first failing spec in a group and stayed true for the rest of this loop (harmless today,
+// since nothing outside the immediate failFast-gated checks ever read it, but a real correctness
+// issue for any future consumer, and now for reporting).
+//
+// When ctx.execObserver is set and this group has a name for index i (see group.names — left nil for
+// a parallel group, whose parallelStep closure reports its own real specs instead of one entry per
+// group.specs), SpecStarted/SpecFinished are emitted around the spec using its own captured failed
+// value, not any carry-over from a before hook or a previous spec.
+func runSpecsRecovered(ctx *Context, g *group) {
+	obs := ctx.execObserver
+	for i, s := range g.specs {
+		ctx.failed = false
+		named := obs != nil && i < len(g.names)
+		var started report.SpecStartEvent
+		if named {
+			started = obs.specStarted(g.names[i])
+		}
 		runStepRecovered(ctx, s, "panic")
-		if ctx.failFast && ctx.failed {
+		failed := ctx.failed
+		if named {
+			obs.specFinished(started, failed)
+		}
+		if ctx.failFast && failed {
 			return
 		}
 	}
