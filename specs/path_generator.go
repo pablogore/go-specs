@@ -479,15 +479,13 @@ func (s *pathSequence) nextSample() (PathValues, bool) {
 	}
 }
 
-// nextExplore mirrors runPlainExploration: seed the corpus with one random candidate (if it
-// passes filters), then on each call either mutate a random corpus entry (70% of the time, once
-// the corpus is non-empty) or draw a fully random candidate, retrying internally against filters.
-// captureSignature() is called from this fixed call site for every candidate in the sequence, so
-// — same as runPlainExploration calling it from its own fixed loop line — it yields the same
-// signature every time within one sequence, meaning exploreCorpus only ever grows by the seed
-// candidate plus the first accepted candidate from this loop. That's an existing, documented
-// heuristic limitation (see runGuidedExploration's doc comment), not something introduced here;
-// this method preserves it exactly rather than changing observable behavior.
+// nextExplore mirrors runPlainExploration's candidate proposal: seed the corpus with one random
+// candidate (if it passes filters), then on each call either mutate a random corpus entry (70% of
+// the time, once the corpus is non-empty) or draw a fully random candidate, retrying internally
+// against filters. Corpus growth from the proposed candidate itself no longer happens here — the
+// proposalController only knows a candidate is real once it has actually run, so growth is
+// admitted by admitFeedback after execution (see that method's doc comment). The seed step above
+// is not itself a proposed/executed candidate, so it stays here, unconditional, exactly as before.
 //
 // The filter-retry loop is capped by exploreAttempts/exploreMaxAttempts, same shape as
 // nextSample: a restrictive-to-impossible filter panics with a diagnostic message instead of
@@ -530,22 +528,13 @@ func (s *pathSequence) nextExplore() (PathValues, bool) {
 			continue
 		}
 		s.exploreExecuted++
-		sig := captureSignature()
-		if _, seen := s.exploreSeenSigs[sig]; !seen {
-			s.exploreSeenSigs[sig] = struct{}{}
-			s.exploreCorpus = append(s.exploreCorpus, candidate.clone())
-		}
 		return candidate, true
 	}
 }
 
-// nextGuided mirrors runGuidedExploration exactly for strategyCoverage/strategySmart: draw a
-// candidate from the CoverageExplorer's/SmartExplorer's own NextInput, retry internally against
-// filters, and on acceptance grow that explorer's own corpus via the same captureSignature()
-// call-site novelty proxy runGuidedExploration already uses — see that method's doc comment for why
-// the proxy, not real per-iteration coverage, still drives corpus growth here. Unlike nextExplore,
-// there is no separate seed step: runGuidedExploration doesn't have one either, so growth caps at
-// exactly one corpus entry (the first accepted candidate) rather than two.
+// nextGuided mirrors runGuidedExploration's candidate proposal for strategyCoverage/
+// strategySmart: draw a candidate from the CoverageExplorer's/SmartExplorer's own NextInput,
+// retrying internally against filters. Corpus growth no longer happens here — see admitFeedback.
 //
 // The filter-retry loop is capped by guidedAttempts/guidedMaxAttempts, same reasoning as
 // nextExplore (#18): total attempts across the run, not consecutive rejections, and a diagnostic
@@ -557,15 +546,12 @@ func (s *pathSequence) nextGuided() (PathValues, bool) {
 		return PathValues{}, false
 	}
 	var nextInput func(*PathGenerator) PathValues
-	var corpus *Corpus
 	strategyName := "ExploreCoverage"
 	switch g.strategy {
 	case strategyCoverage:
 		nextInput = g.coverageExplorer.NextInput
-		corpus = g.coverageExplorer.corpus
 	case strategySmart:
 		nextInput = g.smartExplorer.NextInput
-		corpus = g.smartExplorer.corpus
 		strategyName = "ExploreSmart"
 	}
 	for {
@@ -581,11 +567,6 @@ func (s *pathSequence) nextGuided() (PathValues, bool) {
 			continue
 		}
 		s.guidedExecuted++
-		sig := captureSignature()
-		if _, seen := s.guidedSeenSigs[sig]; !seen {
-			s.guidedSeenSigs[sig] = struct{}{}
-			corpus.Add(candidate)
-		}
 		return candidate, true
 	}
 }
@@ -639,16 +620,46 @@ func (s *pathSequence) advance() bool {
 	return false
 }
 
-// admitFeedback reports the real outcome of executing candidate back to the generator. It is a
-// no-op for all five supported mode/strategy combinations: none has feedback-dependent state today.
-// Sample's candidates are drawn independently of prior results, same as runSamples always was.
-// Explore/ExploreCoverage/ExploreSmart's corpus growth is driven by captureSignature()'s call-site
-// novelty proxy inside nextExplore/nextGuided, not by whether the candidate passed — so
-// admitFeedback has nothing to do for any of them, even though it now runs after the real case (see
-// nextExplore's/nextGuided's doc comments). Genuinely reacting to passed for ExploreCoverage/
-// ExploreSmart would require wiring real per-iteration coverage into Feedback (see
-// runGuidedExploration's doc comment) — deliberately out of scope for this migration; see #43.
-func (s *pathSequence) admitFeedback(candidate PathValues, passed bool) {}
+// admitFeedback reports the real outcome of executing candidate back to the generator. It is the
+// only place Explore/ExploreCoverage/ExploreSmart grow their corpus: nextExplore/nextGuided only
+// propose a candidate, they never know whether it will actually run (the proposalController may
+// still reject it), so corpus growth belongs here, after runIsolatedCase has genuinely executed
+// it. Cartesian and Sample stay no-ops: neither has feedback-dependent state.
+//
+// Growth is still driven by captureSignature()'s call-site novelty proxy, not by passed — that
+// part of the heuristic is unchanged, only moved to run after execution instead of before it.
+// captureSignature() is called from this one fixed call site for every admitted candidate across
+// the whole sequence, so — same as it always was when called from nextExplore/nextGuided — it
+// yields the same signature every time within one sequence: exploreCorpus grows by the seed
+// candidate plus the first admitted candidate, and the guided corpus grows by exactly the first
+// admitted candidate. That's the existing, documented heuristic limitation (see nextGuided's doc
+// comment and #54), not something introduced here.
+//
+// Wiring passed (or real per-iteration coverage) into corpus growth is exactly what #54 tracks as
+// the next step, now that growth has a real post-execution hook to react from.
+func (s *pathSequence) admitFeedback(candidate PathValues, passed bool) {
+	if s == nil || s.g == nil || s.g.mode != ExplorationGuided {
+		return
+	}
+	switch s.g.strategy {
+	case strategyPlain:
+		sig := captureSignature()
+		if _, seen := s.exploreSeenSigs[sig]; !seen {
+			s.exploreSeenSigs[sig] = struct{}{}
+			s.exploreCorpus = append(s.exploreCorpus, candidate.clone())
+		}
+	case strategyCoverage, strategySmart:
+		sig := captureSignature()
+		if _, seen := s.guidedSeenSigs[sig]; !seen {
+			s.guidedSeenSigs[sig] = struct{}{}
+			if s.g.strategy == strategyCoverage {
+				s.g.coverageExplorer.corpus.Add(candidate)
+			} else {
+				s.g.smartExplorer.corpus.Add(candidate)
+			}
+		}
+	}
+}
 
 // bounds returns conservative (never-underestimating) MaxAttempts/MaxAccepted/MaxRejections
 // upper bounds for proposalControllerConfig, computed without generating a single candidate, for

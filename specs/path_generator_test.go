@@ -27,6 +27,25 @@ func collectForEach(g *PathGenerator) []string {
 	return want
 }
 
+// collectSequenceWithFeedback drains a pathSequence like collectSequence, but — matching how
+// runExecutionContext actually drives a sequence in production — calls admitFeedback(pv, true)
+// right after each next(), before proposing the next candidate. For Explore/Coverage/Smart this
+// interleaving is what makes their incremental corpus growth line up with ForEach's synchronous
+// growth timing; plain collectSequence (no feedback) leaves their corpus frozen at the seed.
+func collectSequenceWithFeedback(g *PathGenerator) []string {
+	seq := g.sequence()
+	var got []string
+	for {
+		pv, ok := seq.next()
+		if !ok {
+			break
+		}
+		got = append(got, g.FormatPathValuesForReport(pv))
+		seq.admitFeedback(pv, true)
+	}
+	return got
+}
+
 func TestPathSequenceCartesianMatchesForEachOrder(t *testing.T) {
 	gen := newPathGenerator([]PathVar{
 		{Name: "x", Values: []any{1, 2, 3}},
@@ -220,7 +239,10 @@ func TestPathSequenceExploreMatchesForEachForSameSeed(t *testing.T) {
 		}, nil, 0, 42, true, 6, 0, 0)
 	}
 
-	got := collectSequence(newGen())
+	// Corpus growth now happens in admitFeedback, not next() — so the comparison must drive the
+	// sequence the way runExecutionContext actually does (next() then admitFeedback()) to match
+	// ForEach's synchronous growth timing. See collectSequenceWithFeedback's doc comment.
+	got := collectSequenceWithFeedback(newGen())
 	want := collectForEach(newGen())
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("sequence-based explore = %v, want %v (must match runPlainExploration exactly for the same seed)", got, want)
@@ -264,28 +286,36 @@ func TestPathSequenceExploreBoundsIsExact(t *testing.T) {
 	}
 }
 
-func TestPathSequenceExploreAdmitFeedbackDoesNotAlterSequence(t *testing.T) {
-	newGen := func() *PathGenerator {
-		return newPathGenerator([]PathVar{
-			{Name: "x", rangeSpec: &intRange{min: 0, max: 50}},
-		}, nil, 0, 7, true, 6, 0, 0)
-	}
+// TestPathSequenceExploreCorpusGrowsOnlyAfterAdmitFeedback is #54's PR A architectural boundary:
+// nextExplore only proposes candidates, it must never grow exploreCorpus itself — corpus growth
+// happens exclusively in admitFeedback, after the candidate has actually run. This freezes the
+// post-execution feedback boundary that PR B (real coverage) will build on.
+func TestPathSequenceExploreCorpusGrowsOnlyAfterAdmitFeedback(t *testing.T) {
+	gen := newPathGenerator([]PathVar{
+		{Name: "x", rangeSpec: &intRange{min: 0, max: 50}},
+	}, nil, 0, 7, true, 6, 0, 0)
 
-	baseline := collectSequence(newGen())
-
-	gen := newGen()
 	seq := gen.sequence()
-	var withFeedback []string
-	for {
-		pv, ok := seq.next()
-		if !ok {
-			break
-		}
-		withFeedback = append(withFeedback, gen.FormatPathValuesForReport(pv))
-		seq.admitFeedback(pv, withFeedback != nil)
+	pv, ok := seq.next()
+	if !ok {
+		t.Fatal("expected a candidate")
 	}
-	if !reflect.DeepEqual(baseline, withFeedback) {
-		t.Fatalf("admitFeedback altered the sequence: got %v, want %v", withFeedback, baseline)
+	if got := len(seq.exploreCorpus); got != 1 {
+		t.Fatalf("next() grew the corpus: len(exploreCorpus) = %d, want 1 (seed only, before any admitFeedback)", got)
+	}
+
+	seq.admitFeedback(pv, true)
+	if got := len(seq.exploreCorpus); got != 2 {
+		t.Fatalf("admitFeedback did not grow the corpus: len(exploreCorpus) = %d, want 2 (seed + admitted candidate)", got)
+	}
+
+	// Further next() calls must not grow the corpus either — only admitFeedback does.
+	before := len(seq.exploreCorpus)
+	if _, ok := seq.next(); !ok {
+		t.Fatal("expected a second candidate")
+	}
+	if got := len(seq.exploreCorpus); got != before {
+		t.Fatalf("a later next() grew the corpus: len(exploreCorpus) = %d, want %d (unchanged)", got, before)
 	}
 }
 
@@ -308,7 +338,9 @@ func TestPathSequenceCoverageMatchesForEachForSameSeed(t *testing.T) {
 		}, nil, 0, 42, true, 0, 6, 0)
 	}
 
-	got := collectSequence(newGen())
+	// See TestPathSequenceExploreMatchesForEachForSameSeed: growth moved to admitFeedback, so the
+	// comparison must interleave it the way production dispatch does.
+	got := collectSequenceWithFeedback(newGen())
 	want := collectForEach(newGen())
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("sequence-based ExploreCoverage = %v, want %v (must match runGuidedExploration exactly for the same seed)", got, want)
@@ -352,28 +384,33 @@ func TestPathSequenceCoverageBoundsIsExact(t *testing.T) {
 	}
 }
 
-func TestPathSequenceCoverageAdmitFeedbackDoesNotAlterSequence(t *testing.T) {
-	newGen := func() *PathGenerator {
-		return newPathGenerator([]PathVar{
-			{Name: "x", rangeSpec: &intRange{min: 0, max: 50}},
-		}, nil, 0, 7, true, 0, 6, 0)
-	}
+// TestPathSequenceCoverageCorpusGrowsOnlyAfterAdmitFeedback mirrors the Explore case: nextGuided
+// must not grow the CoverageExplorer's corpus itself; only admitFeedback does, after execution.
+func TestPathSequenceCoverageCorpusGrowsOnlyAfterAdmitFeedback(t *testing.T) {
+	gen := newPathGenerator([]PathVar{
+		{Name: "x", rangeSpec: &intRange{min: 0, max: 50}},
+	}, nil, 0, 7, true, 0, 6, 0)
 
-	baseline := collectSequence(newGen())
-
-	gen := newGen()
 	seq := gen.sequence()
-	var withFeedback []string
-	for {
-		pv, ok := seq.next()
-		if !ok {
-			break
-		}
-		withFeedback = append(withFeedback, gen.FormatPathValuesForReport(pv))
-		seq.admitFeedback(pv, withFeedback != nil)
+	pv, ok := seq.next()
+	if !ok {
+		t.Fatal("expected a candidate")
 	}
-	if !reflect.DeepEqual(baseline, withFeedback) {
-		t.Fatalf("admitFeedback altered the sequence: got %v, want %v", withFeedback, baseline)
+	if got := gen.coverageExplorer.CorpusLen(); got != 0 {
+		t.Fatalf("next() grew the corpus: CorpusLen() = %d, want 0 (before any admitFeedback)", got)
+	}
+
+	seq.admitFeedback(pv, true)
+	if got := gen.coverageExplorer.CorpusLen(); got != 1 {
+		t.Fatalf("admitFeedback did not grow the corpus: CorpusLen() = %d, want 1", got)
+	}
+
+	before := gen.coverageExplorer.CorpusLen()
+	if _, ok := seq.next(); !ok {
+		t.Fatal("expected a second candidate")
+	}
+	if got := gen.coverageExplorer.CorpusLen(); got != before {
+		t.Fatalf("a later next() grew the corpus: CorpusLen() = %d, want %d (unchanged)", got, before)
 	}
 }
 
@@ -396,7 +433,9 @@ func TestPathSequenceSmartMatchesForEachForSameSeed(t *testing.T) {
 		}, nil, 0, 42, true, 0, 0, 6)
 	}
 
-	got := collectSequence(newGen())
+	// See TestPathSequenceExploreMatchesForEachForSameSeed: growth moved to admitFeedback, so the
+	// comparison must interleave it the way production dispatch does.
+	got := collectSequenceWithFeedback(newGen())
 	want := collectForEach(newGen())
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("sequence-based ExploreSmart = %v, want %v (must match runGuidedExploration exactly for the same seed)", got, want)
@@ -440,28 +479,33 @@ func TestPathSequenceSmartBoundsIsExact(t *testing.T) {
 	}
 }
 
-func TestPathSequenceSmartAdmitFeedbackDoesNotAlterSequence(t *testing.T) {
-	newGen := func() *PathGenerator {
-		return newPathGenerator([]PathVar{
-			{Name: "x", rangeSpec: &intRange{min: 0, max: 50}},
-		}, nil, 0, 7, true, 0, 0, 6)
-	}
+// TestPathSequenceSmartCorpusGrowsOnlyAfterAdmitFeedback mirrors the Explore/Coverage cases:
+// nextGuided must not grow the SmartExplorer's corpus itself; only admitFeedback does.
+func TestPathSequenceSmartCorpusGrowsOnlyAfterAdmitFeedback(t *testing.T) {
+	gen := newPathGenerator([]PathVar{
+		{Name: "x", rangeSpec: &intRange{min: 0, max: 50}},
+	}, nil, 0, 7, true, 0, 0, 6)
 
-	baseline := collectSequence(newGen())
-
-	gen := newGen()
 	seq := gen.sequence()
-	var withFeedback []string
-	for {
-		pv, ok := seq.next()
-		if !ok {
-			break
-		}
-		withFeedback = append(withFeedback, gen.FormatPathValuesForReport(pv))
-		seq.admitFeedback(pv, withFeedback != nil)
+	pv, ok := seq.next()
+	if !ok {
+		t.Fatal("expected a candidate")
 	}
-	if !reflect.DeepEqual(baseline, withFeedback) {
-		t.Fatalf("admitFeedback altered the sequence: got %v, want %v", withFeedback, baseline)
+	if got := gen.smartExplorer.CorpusLen(); got != 0 {
+		t.Fatalf("next() grew the corpus: CorpusLen() = %d, want 0 (before any admitFeedback)", got)
+	}
+
+	seq.admitFeedback(pv, true)
+	if got := gen.smartExplorer.CorpusLen(); got != 1 {
+		t.Fatalf("admitFeedback did not grow the corpus: CorpusLen() = %d, want 1", got)
+	}
+
+	before := gen.smartExplorer.CorpusLen()
+	if _, ok := seq.next(); !ok {
+		t.Fatal("expected a second candidate")
+	}
+	if got := gen.smartExplorer.CorpusLen(); got != before {
+		t.Fatalf("a later next() grew the corpus: CorpusLen() = %d, want %d (unchanged)", got, before)
 	}
 }
 
