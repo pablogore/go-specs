@@ -9,6 +9,7 @@ package specs
 
 import (
 	"runtime"
+	"runtime/debug"
 	"sync"
 	"testing"
 )
@@ -62,6 +63,10 @@ const RunBatchSize = 8
 
 // Run executes all specs in order. One context from pool, reused for every spec; zero allocs in loop.
 // Specs are run in batches of RunBatchSize to improve cache behavior and reduce loop overhead.
+//
+// A panic in a spec is recovered instead of crashing the process: it's recorded as a failure (via
+// ctx.recordFailure + ctx.backend.Errorf, message and stack trace), and the next spec still runs —
+// same contract as BlockRunner.Run and the default execution path.
 func (r *MinimalRunner) Run(tb testing.TB) {
 	if r == nil || tb == nil || len(r.specs) == 0 {
 		return
@@ -76,14 +81,32 @@ func (r *MinimalRunner) Run(tb testing.TB) {
 	ctx.Reset(backend)
 	ctx.SetPathValues(PathValues{})
 
-	specs := r.specs
+	runMinimalSpecs(ctx, r.specs)
+}
+
+// runMinimalSpecs runs every spec sequentially against ctx, recovering each one individually. Split
+// out from Run so it can be tested without a real testing.TB.
+func runMinimalSpecs(ctx *Context, specs []RunSpec) {
 	n := len(specs)
 	for i := 0; i < n; i += RunBatchSize {
 		end := min(i+RunBatchSize, n)
 		for j := i; j < end; j++ {
-			specs[j].Fn(ctx)
+			runMinimalSpecRecovered(ctx, specs[j].Fn)
 		}
 	}
+}
+
+// runMinimalSpecRecovered runs a single spec, recovering a panic so it fails just this spec instead
+// of crashing the process. isExpectedAbort sentinels (a controlled backend's FailNow) are already
+// recorded by the backend and must not be reported a second time.
+func runMinimalSpecRecovered(ctx *Context, fn func(*Context)) {
+	defer func() {
+		if recovered := recover(); recovered != nil && !isExpectedAbort(recovered) {
+			ctx.recordFailure()
+			ctx.backend.Errorf("panic: %v\n%s", recovered, debug.Stack())
+		}
+	}()
+	fn(ctx)
 }
 
 // RunParallel runs specs across workers goroutines. Each worker reuses one Context from contextPool.
