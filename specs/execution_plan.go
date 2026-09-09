@@ -4,6 +4,7 @@ package specs
 import (
 	"context"
 	"io"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"testing"
@@ -230,15 +231,58 @@ func runExecutionContext(runCtx context.Context, backend testBackend, rep *repor
 	return proposalControllerResult{}
 }
 
+// runProgram executes one spec's instructions directly in the caller's goroutine (the default,
+// non-path, non-isolated path — see runIsolatedCaseDirect for the path-generated equivalent).
+// A panic anywhere in the before/body instructions is recovered so it fails this one spec instead
+// of crashing the process; after-hook instructions still run regardless, each isolated from the
+// others so one panicking after-hook doesn't stop the rest.
 func runProgram(program []Instruction, ctx *Context, path *PathValues) {
 	if path != nil {
 		ctx.SetPathValues(*path)
 	}
+	var after []Instruction
 	for _, inst := range program {
+		if inst.Code == OpAfterHook && inst.Fn != nil {
+			after = append(after, inst)
+		}
+	}
+	defer func() {
+		if recovered := recover(); recovered != nil && !isExpectedAbort(recovered) {
+			ctx.recordFailure()
+			ctx.backend.Errorf("panic: %v\n%s", recovered, debug.Stack())
+		}
+		for _, inst := range after {
+			runAfterInstructionRecovered(ctx, inst)
+		}
+	}()
+	for _, inst := range program {
+		if inst.Code == OpAfterHook {
+			continue
+		}
 		if inst.Fn != nil {
 			inst.Fn(ctx)
 		}
 	}
+}
+
+// runAfterInstructionRecovered runs a single after-hook instruction, recovering any panic so it
+// can't stop the remaining after-hooks for this spec.
+func runAfterInstructionRecovered(ctx *Context, inst Instruction) {
+	defer func() {
+		if recovered := recover(); recovered != nil && !isExpectedAbort(recovered) {
+			ctx.recordFailure()
+			ctx.backend.Errorf("panic in after hook: %v\n%s", recovered, debug.Stack())
+		}
+	}()
+	inst.Fn(ctx)
+}
+
+// isExpectedAbort reports whether a recovered value is the isolatedCaseAbort sentinel a
+// controlled testBackend uses to stop one case via FailNow/Fatal/Fatalf — an already-recorded
+// stop, not an unexpected panic to report.
+func isExpectedAbort(recovered any) bool {
+	_, ok := recovered.(isolatedCaseAbort)
+	return ok
 }
 
 // isolatedCaseAbort lets a controlled backend stop one isolated case without
