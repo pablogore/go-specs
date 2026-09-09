@@ -20,11 +20,8 @@ const DefaultChunkSize = 16
 // raised it (see runWorkerSpec) — the chunk loop continues to the next spec. No allocations in
 // the loop.
 func runWorkerBatched(specs []RunSpec, backend *parallelBackend, next *uint32, results *[]string, chunkSize uint32) {
-	ctx := contextPool.Get().(*Context)
-	defer func() {
-		ctx.Reset(nil)
-		contextPool.Put(ctx)
-	}()
+	ctx, release := acquireContext(backend)
+	defer release()
 
 	n := uint32(len(specs))
 	if chunkSize == 0 {

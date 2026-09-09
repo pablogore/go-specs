@@ -284,11 +284,8 @@ func runExecutionContext(runCtx context.Context, backend testBackend, rep report
 			},
 		}).Run(runCtx)
 	}
-	ctx := contextPool.Get().(*Context)
-	defer func() {
-		ctx.Reset(nil)
-		contextPool.Put(ctx)
-	}()
+	ctx, release := acquireContext(backend)
+	defer release()
 	started := reportSpecStarted(rep, name, path)
 	message, output := runSpecProgram(backend, ctx, program, name)
 	reportSpecFinished(rep, started, specResult{Failed: ctx.failed, Message: message, Output: output})
@@ -484,8 +481,7 @@ func runIsolatedCase(backend testBackend, program []Instruction, path PathValues
 }
 
 func runIsolatedCaseDirect(backend testBackend, program []Instruction, path PathValues, cov *Coverage) (result isolatedCaseResult) {
-	ctx := contextPool.Get().(*Context)
-	ctx.Reset(backend)
+	ctx, release := acquireContext(backend)
 	ctx.coverage = cov
 	ctx.SetPathValues(path)
 	result.Path = ctx.Path().clone()
@@ -515,9 +511,8 @@ func runIsolatedCaseDirect(backend testBackend, program []Instruction, path Path
 			}()
 		}
 		result.Failed = result.Failed || ctx.failed
-		ctx.Reset(nil)
+		release()
 		result.ContextReset = true
-		contextPool.Put(ctx)
 	}()
 
 	for _, inst := range program {

@@ -141,8 +141,7 @@ func parallelStep(steps []step, names []string) step {
 			go func() {
 				defer wg.Done()
 				backend := &parallelBackend{specIndex: i, results: &results, abortOnFatal: true}
-				child := contextPool.Get().(*Context)
-				child.Reset(backend)
+				child, release := acquireContext(backend)
 				child.SetPathValues(pathValues)
 				var started report.SpecStartEvent
 				if obs != nil {
@@ -164,8 +163,7 @@ func parallelStep(steps []step, names []string) step {
 					if obs != nil {
 						obs.specFinished(started, specResult{Failed: results[i] != "", Message: results[i]})
 					}
-					child.Reset(nil)
-					contextPool.Put(child)
+					release()
 				}()
 				s(child)
 			}()

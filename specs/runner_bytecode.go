@@ -36,12 +36,8 @@ func (r *BytecodeRunner) Run(tb testing.TB) {
 	}
 	backend := asTestBackend(tb)
 	defer putTestBackend(backend)
-	ctx := contextPool.Get().(*Context)
-	defer func() {
-		ctx.Reset(nil)
-		contextPool.Put(ctx)
-	}()
-	ctx.Reset(backend)
+	ctx, release := acquireContext(backend)
+	defer release()
 	ctx.SetPathValues(PathValues{})
 
 	runBytecodeSequential(ctx, r.program.Code, r.program.SpecStarts)
@@ -120,11 +116,8 @@ func (r *BytecodeRunner) RunParallel(tb failureReporter, workers int) {
 // runBytecodeWorker runs spec ranges whose spec index it acquires via next. One context per worker.
 // No allocations in the loop: context from pool, backend preallocated, code/starts read-only.
 func runBytecodeWorker(code []instruction, starts []int, nSpecs int, backend *parallelBackend, next *uint32, results *[]string) {
-	ctx := contextPool.Get().(*Context)
-	defer func() {
-		ctx.Reset(nil)
-		contextPool.Put(ctx)
-	}()
+	ctx, release := acquireContext(backend)
+	defer release()
 
 	for {
 		s := atomic.AddUint32(next, 1) - 1
