@@ -248,6 +248,16 @@ func runExecutionContext(runCtx context.Context, backend testBackend, rep report
 		gen := plan.PathGens[i]
 		seq := gen.sequence()
 		maxAttempts, maxAccepted, maxRejections := gen.bounds()
+		// wantsCoverage is true only for the two strategies that actually consume Coverage
+		// (CoverageExplorer/SmartExplorer's Feedback) — allocating and hitting a 64KB bitmap per
+		// candidate for Cartesian/Sample/plain-Explore, which never look at it, would be pure waste.
+		wantsCoverage := gen.mode == ExplorationGuided && (gen.strategy == strategyCoverage || gen.strategy == strategySmart)
+		// lastCoverage hands the Coverage collected by Execute to AdmitFeedback for the same
+		// candidate. proposalController.Run calls them back-to-back with no concurrency in between
+		// (see its doc comment: "no parallel execution option"), so a closure variable is safe —
+		// keeping Coverage out of proposalCandidate/proposalFeedback keeps the controller itself
+		// generic instead of coupling it to path-generation concerns.
+		var lastCoverage *Coverage
 		return newProposalController(proposalControllerConfig{
 			MaxAttempts:   maxAttempts,
 			MaxAccepted:   maxAccepted,
@@ -260,12 +270,17 @@ func runExecutionContext(runCtx context.Context, backend testBackend, rep report
 				// executions actually happened, how long the suite really took, and where a
 				// failure occurred.
 				started := reportSpecStarted(rep, name, path)
-				result := runIsolatedCase(backend, program, candidate.Values)
+				var cov *Coverage
+				if wantsCoverage {
+					cov = &Coverage{}
+				}
+				result := runIsolatedCase(backend, program, candidate.Values, cov)
 				reportSpecFinished(rep, started, specResult{Failed: result.Failed})
+				lastCoverage = cov
 				return !result.Failed
 			},
 			AdmitFeedback: func(feedback proposalFeedback) {
-				seq.admitFeedback(feedback.Candidate.Values, feedback.Passed)
+				seq.admitFeedback(feedback.Candidate.Values, feedback.Passed, lastCoverage)
 			},
 		}).Run(runCtx)
 	}
@@ -451,23 +466,27 @@ type isolatedCaseResult struct {
 }
 
 // runIsolatedCase executes real generated cases in a subtest so Fatal and FailNow
-// terminate only that case while preserving the parent test's failure semantics.
-func runIsolatedCase(backend testBackend, program []Instruction, path PathValues) (result isolatedCaseResult) {
+// terminate only that case while preserving the parent test's failure semantics. cov, when
+// non-nil, is wired into the Context so assertions executed by program record real coverage
+// into it (see Context.RecordCoverage) — the caller owns the pointer and reads it back directly,
+// nothing needs to be copied out before the Context is returned to the pool.
+func runIsolatedCase(backend testBackend, program []Instruction, path PathValues, cov *Coverage) (result isolatedCaseResult) {
 	if real, ok := backend.(*runnableBackend); ok {
 		real.Run("generated", func(tb testing.TB) {
 			caseBackend := asTestBackend(tb)
 			defer putTestBackend(caseBackend)
 			defer func() { result.Failed = result.Failed || tb.Failed() }()
-			result = runIsolatedCaseDirect(caseBackend, program, path)
+			result = runIsolatedCaseDirect(caseBackend, program, path, cov)
 		})
 		return result
 	}
-	return runIsolatedCaseDirect(backend, program, path)
+	return runIsolatedCaseDirect(backend, program, path, cov)
 }
 
-func runIsolatedCaseDirect(backend testBackend, program []Instruction, path PathValues) (result isolatedCaseResult) {
+func runIsolatedCaseDirect(backend testBackend, program []Instruction, path PathValues, cov *Coverage) (result isolatedCaseResult) {
 	ctx := contextPool.Get().(*Context)
 	ctx.Reset(backend)
+	ctx.coverage = cov
 	ctx.SetPathValues(path)
 	result.Path = ctx.Path().clone()
 
