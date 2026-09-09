@@ -1,6 +1,7 @@
 package specs
 
 import (
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -213,5 +214,69 @@ func TestDescribeWithoutReporterEmitsNoEvents(t *testing.T) {
 	})
 	if !ran {
 		t.Fatal("expected the spec to still run with a nil reporter")
+	}
+}
+
+// TestRunProgramReportsPanicMessageAndOutput proves a recovered spec-body panic — the one sequential
+// failure path that still reaches reportSpecFinished today, see specResult's doc comment — reports
+// Message as the short "panic: value" summary and Output as the panic's stack trace, built once in
+// runProgram and reused for both the backend's Errorf call and the reported event.
+//
+// This drives runProgram/reportSpecFinished directly (not through DescribeWithReporter) with a
+// controlledBackend, matching TestExecutionPlanRecoversPanicAndContinues's established pattern in
+// execution_plan_recovery_test.go: a real recovered panic calls ctx.backend.Errorf, which — on the
+// real *testing.T a DescribeWithReporter(t, ...) call would use — marks this very test failed too.
+func TestRunProgramReportsPanicMessageAndOutput(t *testing.T) {
+	rep := &recordingReporter{}
+	backend := &controlledBackend{}
+	ctx := &Context{backend: backend}
+	program := []Instruction{
+		{Code: OpBody, Fn: func(*Context) { panic("boom") }},
+	}
+
+	started := reportSpecStarted(rep, "panics", nil)
+	message, output := runProgram(program, ctx, nil)
+	reportSpecFinished(rep, started, specResult{Failed: ctx.failed, Message: message, Output: output})
+
+	if len(rep.specFinished) != 1 {
+		t.Fatalf("expected one SpecFinished, got %+v", rep.specFinished)
+	}
+	got := rep.specFinished[0]
+	if !got.Failed {
+		t.Fatalf("expected the panicking spec to be reported as failed, got %+v", got)
+	}
+	if got.Message != "panic: boom" {
+		t.Errorf("expected Message %q, got %q", "panic: boom", got.Message)
+	}
+	if !strings.Contains(got.Output, "runProgram") {
+		t.Errorf("expected Output to contain a stack trace naming runProgram, got %q", got.Output)
+	}
+	if len(backend.errors) != 1 || backend.errors[0] != message+"\n"+output {
+		t.Fatalf("expected backend.Errorf to receive exactly message+\"\\n\"+output, got %v", backend.errors)
+	}
+}
+
+// TestRunProgramAfterHookOnlyPanicStillReportsMessage proves that when the spec body itself doesn't
+// panic but its own after-hook does — unlike runner.go's group-shared after hooks, an ExecutionPlan
+// program's after instructions are scoped to this one spec — that after-hook's message/output still
+// feed the spec's result, so Failed=true is never paired with an empty Message.
+func TestRunProgramAfterHookOnlyPanicStillReportsMessage(t *testing.T) {
+	backend := &controlledBackend{}
+	ctx := &Context{backend: backend}
+	program := []Instruction{
+		{Code: OpBody, Fn: func(*Context) {}},
+		{Code: OpAfterHook, Fn: func(*Context) { panic("after boom") }},
+	}
+
+	message, output := runProgram(program, ctx, nil)
+
+	if !ctx.failed {
+		t.Fatal("expected ctx.failed to be set after an after-hook panic")
+	}
+	if message != "panic in after hook: after boom" {
+		t.Errorf("expected message %q, got %q", "panic in after hook: after boom", message)
+	}
+	if output == "" {
+		t.Error("expected a non-empty stack trace in output")
 	}
 }

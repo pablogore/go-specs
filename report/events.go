@@ -35,7 +35,14 @@ type SpecResultEvent struct {
 	Failed   bool
 	Skipped  bool          // true for a compile-time SkipIt/Skip spec: body never ran, Duration is 0, Failed is always false
 	Duration time.Duration // elapsed time between SpecStartEvent.Time and this event; always 0 when Skipped
-	Message  string
+	Message  string        // short failure summary; empty when not Failed, and also empty for a sequential
+	// Fatalf-based assertion failure — runtime.Goexit unwinds the whole Run call before a SpecFinished
+	// for that spec is ever emitted, so it never reaches this event at all (see specs.runStepRecovered).
+	// Populated today for a recovered panic (the panic value) and for an ItParallel/parallelBackend
+	// failure (the recorded failure string).
+	Output string // full output/stack trace, if any; only a recovered panic produces one today (its
+	// stack trace) — left empty everywhere else, including ItParallel, which has no separable output
+	// source to draw from.
 }
 
 // EventReporter consumes structured events from the spec runner.

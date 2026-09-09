@@ -43,6 +43,20 @@ func specName(names []string, i int) string {
 	return names[i]
 }
 
+// specResult is the outcome of one spec's execution, threaded from the two places that can
+// classify it (runSpecsRecovered's runStepRecovered call and parallelStep's per-goroutine recover)
+// through to specExecutionObserver.specFinished. Message/Output are populated only where a real,
+// distinct source exists today — a recovered panic (Message: the panic value, Output: its stack
+// trace) or an ItParallel/parallelBackend failure (Message: the recorded string, Output: left
+// empty — parallelBackend has no separable output source). An ordinary Fatalf-based sequential
+// assertion failure never reaches specFinished at all (runtime.Goexit unwinds the whole Run call
+// before returning here), so Message/Output stay empty for that case too; see runStepRecovered.
+type specResult struct {
+	Failed  bool
+	Message string
+	Output  string
+}
+
 // specExecutionObserver receives per-spec Started/Finished notifications from execution points
 // that only have a *Context to work with, not a *Runner reference — namely a parallelStep
 // goroutine, compiled into the Program before any Runner or Reporter exists. Runner.Run installs
@@ -50,7 +64,7 @@ func specName(names []string, i int) string {
 // execution is unaffected without one.
 type specExecutionObserver interface {
 	specStarted(name string) report.SpecStartEvent
-	specFinished(start report.SpecStartEvent, failed bool)
+	specFinished(start report.SpecStartEvent, result specResult)
 	// specSkipped reports one compile-time-skipped spec (SkipIt/Skip): a single SpecStarted +
 	// SpecFinished{Skipped: true} pair, with no body ever run. Only Runner.Run's sequential group
 	// execution calls this (see runner.go's reportSkipped) — ItParallel/parallelStep has no skip
@@ -148,7 +162,7 @@ func parallelStep(steps []step, names []string) step {
 						}
 					}
 					if obs != nil {
-						obs.specFinished(started, results[i] != "")
+						obs.specFinished(started, specResult{Failed: results[i] != "", Message: results[i]})
 					}
 					child.Reset(nil)
 					contextPool.Put(child)

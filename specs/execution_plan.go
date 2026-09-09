@@ -3,6 +3,7 @@ package specs
 
 import (
 	"context"
+	"fmt"
 	"runtime/debug"
 	"strings"
 	"sync"
@@ -260,7 +261,7 @@ func runExecutionContext(runCtx context.Context, backend testBackend, rep report
 				// failure occurred.
 				started := reportSpecStarted(rep, name, path)
 				result := runIsolatedCase(backend, program, candidate.Values)
-				reportSpecFinished(rep, started, result.Failed)
+				reportSpecFinished(rep, started, specResult{Failed: result.Failed})
 				return !result.Failed
 			},
 			AdmitFeedback: func(feedback proposalFeedback) {
@@ -276,8 +277,8 @@ func runExecutionContext(runCtx context.Context, backend testBackend, rep report
 	ctx.Reset(backend)
 	ctx.SetPathValues(PathValues{})
 	started := reportSpecStarted(rep, name, path)
-	runProgram(program, ctx, nil)
-	reportSpecFinished(rep, started, ctx.failed)
+	message, output := runProgram(program, ctx, nil)
+	reportSpecFinished(rep, started, specResult{Failed: ctx.failed, Message: message, Output: output})
 	return proposalControllerResult{}
 }
 
@@ -311,11 +312,17 @@ func reportSpecStarted(rep report.EventReporter, name string, path []string) rep
 	return e
 }
 
-func reportSpecFinished(rep report.EventReporter, start report.SpecStartEvent, failed bool) {
+func reportSpecFinished(rep report.EventReporter, start report.SpecStartEvent, result specResult) {
 	if rep == nil {
 		return
 	}
-	rep.SpecFinished(report.SpecResultEvent{SpecStartEvent: start, Failed: failed, Duration: time.Since(start.Time)})
+	rep.SpecFinished(report.SpecResultEvent{
+		SpecStartEvent: start,
+		Failed:         result.Failed,
+		Duration:       time.Since(start.Time),
+		Message:        result.Message,
+		Output:         result.Output,
+	})
 }
 
 // runProgram executes one spec's instructions directly in the caller's goroutine (the default,
@@ -323,7 +330,18 @@ func reportSpecFinished(rep report.EventReporter, start report.SpecStartEvent, f
 // A panic anywhere in the before/body instructions is recovered so it fails this one spec instead
 // of crashing the process; after-hook instructions still run regardless, each isolated from the
 // others so one panicking after-hook doesn't stop the rest.
-func runProgram(program []Instruction, ctx *Context, path *PathValues) {
+//
+// On a recovered panic, message and output are built exactly once — message is the short
+// "panic: value" summary, output is the raw stack trace — and reused both for ctx.backend.Errorf
+// (unchanged wire format: "message\noutput") and as the return value runExecutionContext feeds
+// into reportSpecFinished's specResult; they are never reconstructed elsewhere. If the body didn't
+// panic but an after-hook instruction (scoped to this one spec here, unlike the group-shared after
+// hooks in runner.go) did, that after-hook's own message/output (built the same way, once, in
+// runAfterInstructionRecovered) is used instead — first recorded panic wins, matching the
+// first-write-wins convention parallelStep/parallelBackend already use. Both stay "" when the spec
+// didn't panic at all, including when it failed via runtime.Goexit (a real testing.T.Fatalf/FailNow)
+// — recover() cannot observe that case; see specResult's doc comment.
+func runProgram(program []Instruction, ctx *Context, path *PathValues) (message, output string) {
 	if path != nil {
 		ctx.SetPathValues(*path)
 	}
@@ -336,10 +354,15 @@ func runProgram(program []Instruction, ctx *Context, path *PathValues) {
 	defer func() {
 		if recovered := recover(); recovered != nil && !isExpectedAbort(recovered) {
 			ctx.recordFailure()
-			ctx.backend.Errorf("panic: %v\n%s", recovered, debug.Stack())
+			message = fmt.Sprintf("panic: %v", recovered)
+			output = string(debug.Stack())
+			ctx.backend.Errorf("%s\n%s", message, output)
 		}
 		for _, inst := range after {
-			runAfterInstructionRecovered(ctx, inst)
+			m, o := runAfterInstructionRecovered(ctx, inst)
+			if message == "" {
+				message, output = m, o
+			}
 		}
 	}()
 	for _, inst := range program {
@@ -350,18 +373,23 @@ func runProgram(program []Instruction, ctx *Context, path *PathValues) {
 			inst.Fn(ctx)
 		}
 	}
+	return
 }
 
 // runAfterInstructionRecovered runs a single after-hook instruction, recovering any panic so it
-// can't stop the remaining after-hooks for this spec.
-func runAfterInstructionRecovered(ctx *Context, inst Instruction) {
+// can't stop the remaining after-hooks for this spec. message/output follow the same build-once
+// contract as runProgram's own panic recovery — see its doc comment.
+func runAfterInstructionRecovered(ctx *Context, inst Instruction) (message, output string) {
 	defer func() {
 		if recovered := recover(); recovered != nil && !isExpectedAbort(recovered) {
 			ctx.recordFailure()
-			ctx.backend.Errorf("panic in after hook: %v\n%s", recovered, debug.Stack())
+			message = fmt.Sprintf("panic in after hook: %v", recovered)
+			output = string(debug.Stack())
+			ctx.backend.Errorf("%s\n%s", message, output)
 		}
 	}()
 	inst.Fn(ctx)
+	return
 }
 
 // isExpectedAbort reports whether a recovered value is the isolatedCaseAbort sentinel a

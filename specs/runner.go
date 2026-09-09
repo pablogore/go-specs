@@ -3,6 +3,7 @@
 package specs
 
 import (
+	"fmt"
 	"runtime/debug"
 	"sync"
 	"testing"
@@ -64,14 +65,20 @@ func (o *reporterObserver) specStarted(name string) report.SpecStartEvent {
 	return e
 }
 
-func (o *reporterObserver) specFinished(start report.SpecStartEvent, failed bool) {
+func (o *reporterObserver) specFinished(start report.SpecStartEvent, result specResult) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.total++
-	if failed {
+	if result.Failed {
 		o.failed++
 	}
-	o.rep.SpecFinished(report.SpecResultEvent{SpecStartEvent: start, Failed: failed, Duration: time.Since(start.Time)})
+	o.rep.SpecFinished(report.SpecResultEvent{
+		SpecStartEvent: start,
+		Failed:         result.Failed,
+		Duration:       time.Since(start.Time),
+		Message:        result.Message,
+		Output:         result.Output,
+	})
 }
 
 // specSkipped reports a compile-time-skipped spec: SpecStarted immediately followed by
@@ -240,10 +247,10 @@ func runSpecsRecovered(ctx *Context, g *group) {
 		if named {
 			started = obs.specStarted(g.names[i])
 		}
-		runStepRecovered(ctx, s, "panic")
+		message, output := runStepRecovered(ctx, s, "panic")
 		failed := ctx.failed
 		if named {
-			obs.specFinished(started, failed)
+			obs.specFinished(started, specResult{Failed: failed, Message: message, Output: output})
 		}
 		if ctx.failFast && failed {
 			return
@@ -263,12 +270,22 @@ func runAfterRecovered(ctx *Context, after []step) {
 // runStepRecovered runs a single step, recovering a panic so it fails just this step (recorded via
 // ctx.recordFailure + ctx.backend.Errorf with message and stack trace) instead of crashing the
 // process. label distinguishes a before/spec panic from an after-hook panic in the reported message.
-func runStepRecovered(ctx *Context, s step, label string) {
+//
+// On a recovered panic, message and output are built exactly once here — message is the short
+// "label: value" summary, output is the raw stack trace — and reused both for ctx.backend.Errorf
+// (unchanged wire format: "message\noutput") and as the return value runSpecsRecovered feeds into
+// specFinished's specResult. They are never reconstructed anywhere else. Both are zero-value ("")
+// when s(ctx) returns normally, including via runtime.Goexit (a real testing.T.Fatalf/FailNow) —
+// recover() cannot observe that case, so it is indistinguishable here from a spec that never failed.
+func runStepRecovered(ctx *Context, s step, label string) (message, output string) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			ctx.recordFailure()
-			ctx.backend.Errorf("%s: %v\n%s", label, recovered, debug.Stack())
+			message = fmt.Sprintf("%s: %v", label, recovered)
+			output = string(debug.Stack())
+			ctx.backend.Errorf("%s\n%s", message, output)
 		}
 	}()
 	s(ctx)
+	return
 }
