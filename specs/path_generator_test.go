@@ -2,6 +2,7 @@ package specs
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -464,11 +465,64 @@ func TestPathSequenceSmartAdmitFeedbackDoesNotAlterSequence(t *testing.T) {
 	}
 }
 
+// TestPathSequenceExplorePanicsWhenFiltersCannotBeSatisfied is #18's regression: before the
+// attempt budget, an impossible filter made nextExplore's internal retry loop spin forever
+// instead of failing. Same shape as TestPathSequenceSamplePanicsWhenFiltersCannotBeSatisfied.
+func TestPathSequenceExplorePanicsWhenFiltersCannotBeSatisfied(t *testing.T) {
+	gen := newPathGenerator([]PathVar{
+		{Name: "x", Values: []any{1}},
+	}, []PathFilter{func(PathValues) bool { return false }}, 0, 0, false, 3, 0, 0)
+
+	seq := gen.sequence()
+	assertPanicsWith(t, func() { seq.next() }, "Explore", "attempts", "iterations")
+}
+
+func TestPathSequenceCoveragePanicsWhenFiltersCannotBeSatisfied(t *testing.T) {
+	gen := newPathGenerator([]PathVar{
+		{Name: "x", Values: []any{1}},
+	}, []PathFilter{func(PathValues) bool { return false }}, 0, 0, false, 0, 3, 0)
+
+	seq := gen.sequence()
+	assertPanicsWith(t, func() { seq.next() }, "ExploreCoverage", "attempts", "iterations")
+}
+
+func TestPathSequenceSmartPanicsWhenFiltersCannotBeSatisfied(t *testing.T) {
+	gen := newPathGenerator([]PathVar{
+		{Name: "x", Values: []any{1}},
+	}, []PathFilter{func(PathValues) bool { return false }}, 0, 0, false, 0, 0, 3)
+
+	seq := gen.sequence()
+	assertPanicsWith(t, func() { seq.next() }, "ExploreSmart", "attempts", "iterations")
+}
+
 func assertPanics(t *testing.T, fn func()) {
 	t.Helper()
 	defer func() {
 		if recover() == nil {
 			t.Fatal("expected a panic")
+		}
+	}()
+	fn()
+}
+
+// assertPanicsWith is assertPanics plus a check that the panic message names the diagnostics
+// #18 requires: which strategy hit the budget, and that it's about attempts/iterations, not a
+// bare failure with no actionable detail.
+func assertPanicsWith(t *testing.T, fn func(), wantSubstrings ...string) {
+	t.Helper()
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected a panic")
+		}
+		msg, ok := r.(string)
+		if !ok {
+			t.Fatalf("expected a string panic message, got %T: %v", r, r)
+		}
+		for _, want := range wantSubstrings {
+			if !strings.Contains(msg, want) {
+				t.Fatalf("panic message %q missing expected substring %q", msg, want)
+			}
 		}
 	}()
 	fn()

@@ -493,6 +493,77 @@ func TestExploreSmartRuns(t *testing.T) {
 	})
 }
 
+// The following tests exercise the real execution path (Describe/Paths().Explore*()) rather than
+// pathSequence directly, so the attempt-budget fix (#18) is proven against what actually runs in
+// production, not just against the generator in isolation.
+
+func TestPathsExploreImpossibleFilterPanicsWithDiagnostics(t *testing.T) {
+	assertPanicsWith(t, func() {
+		Describe(t, "PathsExploreImpossibleFilter", func(s *Spec) {
+			s.Paths(func(pb *PathBuilder) {
+				pb.IntRange("x", 0, 100)
+				pb.Filter(func(PathValues) bool { return false })
+			}).Explore(5).It("never runs", func(ctx *Context) {
+				t.Fatal("case must not execute when the filter admits nothing")
+			})
+		})
+	}, "Explore", "attempts", "iterations")
+}
+
+func TestPathsExploreCoverageImpossibleFilterPanicsWithDiagnostics(t *testing.T) {
+	assertPanicsWith(t, func() {
+		Describe(t, "PathsExploreCoverageImpossibleFilter", func(s *Spec) {
+			s.Paths(func(pb *PathBuilder) {
+				pb.IntRange("x", 0, 100)
+				pb.Filter(func(PathValues) bool { return false })
+			}).ExploreCoverage(5).It("never runs", func(ctx *Context) {
+				t.Fatal("case must not execute when the filter admits nothing")
+			})
+		})
+	}, "ExploreCoverage", "attempts", "iterations")
+}
+
+func TestPathsExploreSmartImpossibleFilterPanicsWithDiagnostics(t *testing.T) {
+	assertPanicsWith(t, func() {
+		Describe(t, "PathsExploreSmartImpossibleFilter", func(s *Spec) {
+			s.Paths(func(pb *PathBuilder) {
+				pb.IntRange("x", 0, 100)
+				pb.Filter(func(PathValues) bool { return false })
+			}).ExploreSmart(5).It("never runs", func(ctx *Context) {
+				t.Fatal("case must not execute when the filter admits nothing")
+			})
+		})
+	}, "ExploreSmart", "attempts", "iterations")
+}
+
+// TestPathsExploreRestrictiveFilterStillReachesIterations guards against the new attempt budget
+// tripping on a filter that is restrictive but satisfiable — it must still reach exactly
+// `iterations`, not fail early just because acceptance is rare.
+func TestPathsExploreRestrictiveFilterStillReachesIterations(t *testing.T) {
+	const iterations = 20
+	var mu sync.Mutex
+	var count int
+	Describe(t, "PathsExploreRestrictiveFilter", func(s *Spec) {
+		s.Paths(func(pb *PathBuilder) {
+			pb.IntRange("x", 0, 100)
+			pb.Filter(func(v PathValues) bool {
+				return v.Int("x")%10 == 0
+			})
+		}).Explore(iterations).It("multiple of ten", func(ctx *Context) {
+			x := ctx.Path().Int("x")
+			if x%10 != 0 {
+				ctx.T.Fatalf("expected multiple of ten, got %d", x)
+			}
+			mu.Lock()
+			count++
+			mu.Unlock()
+		})
+	})
+	if count != iterations {
+		t.Fatalf("expected %d iterations under a restrictive-but-viable filter, got %d", iterations, count)
+	}
+}
+
 func TestShrinkerCoordinateDescentMultipleInts(t *testing.T) {
 	gen := newPathGenerator([]PathVar{
 		{Name: "x", rangeSpec: &intRange{min: 0, max: 1000}},
