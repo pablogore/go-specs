@@ -38,7 +38,7 @@ func TestGeneratedCaseLifecycle(t *testing.T) {
 			{Code: OpBody, Fn: func(ctx *Context) { order = append(order, "body") }},
 			{Code: OpAfterHook, Fn: func(ctx *Context) { order = append(order, "after-inner") }},
 			{Code: OpAfterHook, Fn: func(ctx *Context) { order = append(order, "after-outer") }},
-		}, PathValues{})
+		}, PathValues{}, nil)
 		if got, want := fmt.Sprint(order), "[before body after-inner after-outer]"; got != want {
 			t.Fatalf("hook order = %s, want %s", got, want)
 		}
@@ -56,7 +56,7 @@ func TestGeneratedCaseLifecycle(t *testing.T) {
 		result := runIsolatedCase(backend, []Instruction{
 			{Code: OpBody, Fn: func(ctx *Context) { ctx.Expect(false).ToEqual(true) }},
 			{Code: OpAfterHook, Fn: func(*Context) { afterRuns++ }},
-		}, PathValues{})
+		}, PathValues{}, nil)
 		if !result.Failed || afterRuns != 1 {
 			t.Fatalf("result = %#v, errors = %v, after runs = %d", result, backend.errors, afterRuns)
 		}
@@ -68,7 +68,7 @@ func TestGeneratedCaseLifecycle(t *testing.T) {
 		result := runIsolatedCase(backend, []Instruction{
 			{Code: OpBody, Fn: func(ctx *Context) { ctx.backend.FailNow(); bodyCompleted = true }},
 			{Code: OpAfterHook, Fn: func(*Context) { afterRuns = true }},
-		}, PathValues{})
+		}, PathValues{}, nil)
 		if !result.Failed || !backend.failNow || bodyCompleted || !afterRuns || result.Panic != nil {
 			t.Fatalf("result = %#v, failNow = %t, body completed = %t, after ran = %t", result, backend.failNow, bodyCompleted, afterRuns)
 		}
@@ -80,7 +80,7 @@ func TestGeneratedCaseLifecycle(t *testing.T) {
 		result := runIsolatedCase(backend, []Instruction{
 			{Code: OpBody, Fn: func(*Context) { panic("body panic") }},
 			{Code: OpAfterHook, Fn: func(*Context) { afterRuns++ }},
-		}, PathValues{})
+		}, PathValues{}, nil)
 		if got, want := result.Panic, any("body panic"); got != want || afterRuns != 1 {
 			t.Fatalf("panic = %#v, after runs = %d", got, afterRuns)
 		}
@@ -89,9 +89,9 @@ func TestGeneratedCaseLifecycle(t *testing.T) {
 	t.Run("shrink probe retains original values deterministically", func(t *testing.T) {
 		path := PathValues{values: []any{7}, present: []bool{true}, index: map[string]int{"value": 0}}
 		program := []Instruction{{Code: OpBody, Fn: func(*Context) {}}, {Code: OpAfterHook, Fn: func(*Context) {}}}
-		first := runIsolatedCase(&controlledBackend{}, program, path)
+		first := runIsolatedCase(&controlledBackend{}, program, path, nil)
 		path.values[0] = 9
-		second := runIsolatedCase(&controlledBackend{}, program, path)
+		second := runIsolatedCase(&controlledBackend{}, program, path, nil)
 		if first.Path.Int("value") != 7 || second.Path.Int("value") != 9 || first.Failed != second.Failed || first.Panic != second.Panic {
 			t.Fatalf("first = %#v, second = %#v", first, second)
 		}
@@ -422,6 +422,51 @@ func TestRunExecutionContextSmartStopsGeneratingOnCancelMidRun(t *testing.T) {
 	}
 	if considered != 1 {
 		t.Fatalf("candidates considered = %d, want 1 — generation must not run ahead of execution", considered)
+	}
+}
+
+// TestRunExecutionContextCoverageGrowsCorpusFromRealCoverage is #54's end-to-end proof for
+// strategyCoverage: real coverage recorded by an assertion running inside the executed case (not
+// a synthetic Coverage fed directly into admitFeedback, as in
+// TestPathSequenceCoverageCorpusGrowsOnlyAfterAdmitFeedback) must actually flow through
+// runIsolatedCase -> ctx.RecordCoverage -> admitFeedback -> CoverageExplorer.Feedback and grow the
+// corpus. EqualTo(ctx, v, v) records an edge whose hash depends on v itself (see
+// coverageEdgeHash/valueHash), so distinct candidate values are near-certain to look like novel
+// coverage — if the wiring were broken (e.g. cov never reaching ctx, or always compared as if
+// identical), the corpus would stay at 0 or 1 regardless of how many candidates ran.
+func TestRunExecutionContextCoverageGrowsCorpusFromRealCoverage(t *testing.T) {
+	const iterations = 20
+	gen := newPathGenerator([]PathVar{{Name: "value", rangeSpec: &intRange{min: 0, max: 1000}}},
+		nil, 0, 42, true, 0, iterations, 0)
+	plan := &ExecutionPlan{
+		Instructions: []Instruction{{Code: OpBody, Fn: func(ctx *Context) {
+			v := ctx.Path().Int("value")
+			EqualTo(ctx, v, v)
+		}}},
+		ProgramStart: []int{0}, ProgramLen: []int{1}, PathGens: []*PathGenerator{gen},
+	}
+	runExecutionContext(context.Background(), &controlledBackend{}, nil, plan, 0)
+	if got := gen.coverageExplorer.CorpusLen(); got <= 1 {
+		t.Fatalf("CoverageExplorer corpus = %d, want > 1 — real per-candidate coverage from the executed assertion should have grown it past the seed", got)
+	}
+}
+
+// TestRunExecutionContextSmartGrowsCorpusFromRealCoverage is
+// TestRunExecutionContextCoverageGrowsCorpusFromRealCoverage's counterpart for strategySmart.
+func TestRunExecutionContextSmartGrowsCorpusFromRealCoverage(t *testing.T) {
+	const iterations = 20
+	gen := newPathGenerator([]PathVar{{Name: "value", rangeSpec: &intRange{min: 0, max: 1000}}},
+		nil, 0, 42, true, 0, 0, iterations)
+	plan := &ExecutionPlan{
+		Instructions: []Instruction{{Code: OpBody, Fn: func(ctx *Context) {
+			v := ctx.Path().Int("value")
+			EqualTo(ctx, v, v)
+		}}},
+		ProgramStart: []int{0}, ProgramLen: []int{1}, PathGens: []*PathGenerator{gen},
+	}
+	runExecutionContext(context.Background(), &controlledBackend{}, nil, plan, 0)
+	if got := gen.smartExplorer.CorpusLen(); got <= 1 {
+		t.Fatalf("SmartExplorer corpus = %d, want > 1 — real per-candidate coverage from the executed assertion should have grown it past the seed", got)
 	}
 }
 

@@ -351,18 +351,18 @@ type pathSequence struct {
 	exploreSeenSigs    map[uint64]struct{}
 
 	// ExploreCoverage/ExploreSmart: mirrors runGuidedExploration's state one call to next() at a
-	// time. Unlike exploreSeenSigs above, guidedSeenSigs is the only local copy needed — NextInput
-	// is a fixed method on CoverageExplorer/SmartExplorer that always reads that explorer's own
-	// e.corpus field, so corpus growth must write directly into g.coverageExplorer.corpus /
-	// g.smartExplorer.corpus (the same real corpus runGuidedExploration grows) rather than a local
-	// copy; there is no g.corpus-equivalent field to avoid contaminating for these two strategies.
-	// guidedSeenSigs stays local so a direct ForEach call and an incremental sequence() walk never
-	// share (and corrupt) the same signature set — same discipline as exploreSeenSigs vs g.seenSigs.
+	// time. NextInput is a fixed method on CoverageExplorer/SmartExplorer that always reads that
+	// explorer's own e.corpus field, so corpus growth writes directly into
+	// g.coverageExplorer.corpus/g.smartExplorer.corpus (the same real corpus runGuidedExploration
+	// grows) — there is no g.corpus-equivalent field to avoid contaminating for these two
+	// strategies. Unlike strategyPlain, growth here is driven by genuine coverage novelty
+	// (CoverageExplorer.Feedback/SmartExplorer.Feedback, called from admitFeedback with the
+	// Coverage recorded by the candidate's actual execution) rather than a local signature set, so
+	// no local dedup state is needed here.
 	// guidedAttempts/guidedMaxAttempts cap the internal retry loop, same reasoning as Explore (#18).
 	guidedExecuted    int
 	guidedAttempts    int
 	guidedMaxAttempts int
-	guidedSeenSigs    map[uint64]struct{}
 }
 
 // sequence returns a pathSequence for g, incremental for every ExplorationMode (Cartesian,
@@ -403,7 +403,6 @@ func (g *PathGenerator) sequence() *pathSequence {
 			seq.exploreSeenSigs = make(map[uint64]struct{})
 			seq.exploreMaxAttempts = maxAttempts
 		case strategyCoverage, strategySmart:
-			seq.guidedSeenSigs = make(map[uint64]struct{})
 			seq.guidedMaxAttempts = maxAttempts
 		}
 		if g.iterations <= 0 {
@@ -626,18 +625,25 @@ func (s *pathSequence) advance() bool {
 // still reject it), so corpus growth belongs here, after runIsolatedCase has genuinely executed
 // it. Cartesian and Sample stay no-ops: neither has feedback-dependent state.
 //
-// Growth is still driven by captureSignature()'s call-site novelty proxy, not by passed — that
-// part of the heuristic is unchanged, only moved to run after execution instead of before it.
-// captureSignature() is called from this one fixed call site for every admitted candidate across
-// the whole sequence, so — same as it always was when called from nextExplore/nextGuided — it
-// yields the same signature every time within one sequence: exploreCorpus grows by the seed
-// candidate plus the first admitted candidate, and the guided corpus grows by exactly the first
-// admitted candidate. That's the existing, documented heuristic limitation (see nextGuided's doc
-// comment and #54), not something introduced here.
+// strategyPlain still grows exploreCorpus from captureSignature()'s call-site novelty proxy — #54
+// only wires real coverage into the two strategies actually named CoverageExplorer/SmartExplorer;
+// plain Explore has no coverage concept to draw on, so it keeps its existing heuristic unchanged,
+// just moved to run after execution instead of before it (same limitation as before: since
+// captureSignature() is called from this one fixed call site for every admitted candidate,
+// exploreCorpus grows by the seed candidate plus exactly the first admitted candidate).
 //
-// Wiring passed (or real per-iteration coverage) into corpus growth is exactly what #54 tracks as
-// the next step, now that growth has a real post-execution hook to react from.
-func (s *pathSequence) admitFeedback(candidate PathValues, passed bool) {
+// strategyCoverage/strategySmart now grow from cov, the real per-candidate Coverage collected by
+// runIsolatedCaseDirect while candidate actually ran (see runExecutionContext's Execute closure,
+// which allocates it, and CoverageExplorer.Feedback/SmartExplorer.Feedback, which decide novelty
+// by comparing cov against everything seen across the whole run so far) — not the captureSignature
+// proxy runGuidedExploration's ForEach-compatibility path still uses (that path never executes a
+// real case, so it has no Coverage to offer; see its doc comment). cov is nil when the caller
+// didn't collect coverage for this candidate; both Feedback methods are nil-safe no-ops then.
+//
+// passed still doesn't affect growth for any strategy: a failing candidate's coverage is feedback
+// too (see proposalFeedback's doc comment), and ForEach's compatibility path never considered
+// pass/fail either, so this preserves that semantics rather than introducing a new one.
+func (s *pathSequence) admitFeedback(candidate PathValues, passed bool, cov *Coverage) {
 	if s == nil || s.g == nil || s.g.mode != ExplorationGuided {
 		return
 	}
@@ -648,16 +654,10 @@ func (s *pathSequence) admitFeedback(candidate PathValues, passed bool) {
 			s.exploreSeenSigs[sig] = struct{}{}
 			s.exploreCorpus = append(s.exploreCorpus, candidate.clone())
 		}
-	case strategyCoverage, strategySmart:
-		sig := captureSignature()
-		if _, seen := s.guidedSeenSigs[sig]; !seen {
-			s.guidedSeenSigs[sig] = struct{}{}
-			if s.g.strategy == strategyCoverage {
-				s.g.coverageExplorer.corpus.Add(candidate)
-			} else {
-				s.g.smartExplorer.corpus.Add(candidate)
-			}
-		}
+	case strategyCoverage:
+		s.g.coverageExplorer.Feedback(candidate, cov)
+	case strategySmart:
+		s.g.smartExplorer.Feedback(candidate, cov)
 	}
 }
 
@@ -825,11 +825,15 @@ func (g *PathGenerator) runExploration(fn func(PathValues)) {
 // this method at all.
 //
 // Real coverage-guided corpus growth needs ctx.coverage populated with genuine assertion-level edge
-// data on every iteration, which requires wiring the runner to set it per path iteration — not yet
-// done (see nextGuided's doc comment). So, same as nextGuided, this method's corpus growth still
-// uses the call-site-signature novelty heuristic (captureSignature) as an honest, documented proxy —
-// good enough to give NextInput something to mutate from instead of always falling back to fully
-// random input, but not genuine coverage-guided selection.
+// data from an actual case execution — that's now wired for the dispatch path (runExecutionContext
+// allocates a Coverage per candidate, runIsolatedCaseDirect attaches it to ctx during the run, and
+// pathSequence.admitFeedback feeds it to CoverageExplorer.Feedback/SmartExplorer.Feedback). This
+// method has no such execution to draw coverage from — fn here is an arbitrary caller-supplied
+// callback, not a case that runs assertions against a Context — so it keeps the call-site-signature
+// novelty heuristic (captureSignature) as an honest, documented proxy: good enough to give NextInput
+// something to mutate from instead of always falling back to fully random input, but not genuine
+// coverage-guided selection. This is why TestPathSequence{Coverage,Smart}MatchesForEachForSameSeed
+// were removed in #54's PR B — the two paths now grow their corpus by genuinely different criteria.
 func (g *PathGenerator) runGuidedExploration(fn func(PathValues), nextInput func(*PathGenerator) PathValues, corpus *Corpus) {
 	executed := 0
 	for executed < g.iterations {
