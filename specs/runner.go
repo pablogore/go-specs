@@ -1,5 +1,6 @@
 // runner.go executes a compiled Program. No hook resolution at runtime; no allocations in the loop
-// unless a Reporter is set.
+// unless a Reporter is set, or the backend is a real *testing.T (each spec body then runs in its own
+// subtest for isolation — see runSpecRecovered).
 package specs
 
 import (
@@ -169,10 +170,12 @@ func runGroups(ctx *Context, groups []group) {
 // Each spec is recovered individually, so one panicking spec doesn't stop its siblings — matching
 // the default execution path's contract (see execution_plan.go's runProgram).
 //
-// after always runs, via defer: whether before or a spec panicked, or a spec called a real
-// t.Fatal/FailNow (runtime.Goexit unwinds through this defer same as a panic would), after gets a
-// chance to clean up whatever before did set up. Each after hook is recovered individually, so one
-// panicking after hook doesn't stop its siblings from attempting to run.
+// after always runs, via defer. A before-hook panic or real t.Fatal/FailNow still unwinds straight
+// through this defer (before is not isolated — see runSpecRecovered's doc comment on why only specs
+// are). A spec's real t.Fatal/FailNow no longer unwinds this goroutine at all (#74): it runs isolated
+// in its own subtest, so runSpecsRecovered's loop returns to this defer normally once the subtest
+// finishes — after still runs either way, just via a different path for each case. Each after hook is
+// recovered individually, so one panicking after hook doesn't stop its siblings from attempting to run.
 //
 // g.skipped is reported first, before before even runs: those names carry no before/after of their
 // own (see builder.go's finalize), so their identity as skipped must not depend on whether this
@@ -238,6 +241,11 @@ func runBeforeRecovered(ctx *Context, before []step) (ok bool) {
 // a parallel group, whose parallelStep closure reports its own real specs instead of one entry per
 // group.specs), SpecStarted/SpecFinished are emitted around the spec using its own captured failed
 // value, not any carry-over from a before hook or a previous spec.
+//
+// Each spec body runs via runSpecRecovered, isolated in its own subtest when possible — see its doc
+// comment (#74). failFast still works correctly across that isolation: t.Run blocks until the
+// subtest's goroutine finishes, so ctx.failed (set synchronously by recordFailure before any Fatalf,
+// not by recover) is visible here exactly like before isolation existed.
 func runSpecsRecovered(ctx *Context, g *group) {
 	obs := ctx.execObserver
 	for i, s := range g.specs {
@@ -247,7 +255,7 @@ func runSpecsRecovered(ctx *Context, g *group) {
 		if named {
 			started = obs.specStarted(g.names[i])
 		}
-		message, output := runStepRecovered(ctx, s, "panic")
+		message, output := runSpecRecovered(ctx, s, specName(g.names, i))
 		failed := ctx.failed
 		if named {
 			obs.specFinished(started, specResult{Failed: failed, Message: message, Output: output})
@@ -256,6 +264,65 @@ func runSpecsRecovered(ctx *Context, g *group) {
 			return
 		}
 	}
+}
+
+// runSpecRecovered runs one spec's body, isolated in its own subtest when ctx.backend is a real
+// *testing.T (via runnableBackend) — so a Fatalf/Fatal/FailNow inside s (runtime.Goexit) unwinds
+// only that subtest's goroutine, not the entire Run/Describe call, letting the remaining specs and
+// this group's after hooks still run and be reported. A fake backend (e.g. controlledBackend in
+// tests, whose Run is a no-op — see runIsolatedCase's identical gate) falls back to running s
+// directly via runStepRecovered, same as before this isolation existed; so does a *testing.B — its
+// concrete type is checked directly here (not via runnableBackend.Run, which would still allocate a
+// closure per call even though it never ends up subtesting) to keep BenchmarkRunner_GoSpecs's
+// existing zero-alloc contract intact.
+//
+// name is the framework's own spec name (group.names[i], via specName — possibly ""), passed to
+// testing.T.Run purely for -v/IDE/test2json presentation. It is never read back from t.Name():
+// SpecStartEvent/SpecResultEvent's Name always comes from group.names, so Go's subtest sanitization
+// (spaces to "_") and duplicate-name "#01" suffixing never leak into reported spec identity.
+func runSpecRecovered(ctx *Context, s step, name string) (message, output string) {
+	real, ok := ctx.backend.(*runnableBackend)
+	if !ok {
+		return runStepRecovered(ctx, s, "panic")
+	}
+	t, ok := real.tb.(*testing.T)
+	if !ok {
+		return runStepRecovered(ctx, s, "panic")
+	}
+	return runSpecIsolated(ctx, t, name, s)
+}
+
+// runSpecIsolated creates the real subtest and runs s inside it. Split out from runSpecRecovered
+// because the closure below captures named returns by reference: if it lived directly in
+// runSpecRecovered, Go's escape analysis would heap-allocate that function's message/output for
+// every call — including the *testing.B fast path above, which never reaches this line at all —
+// since escape analysis decides a variable's storage class for the whole function, not per branch.
+// Keeping the capture inside its own function scopes that heap allocation to the isolation path only.
+func runSpecIsolated(ctx *Context, t *testing.T, name string, s step) (message, output string) {
+	t.Run(name, func(subT *testing.T) {
+		message, output = runSpecBody(ctx, subT, s)
+	})
+	return
+}
+
+// runSpecBody runs s against ctx with ctx.backend/ctx.T temporarily swapped to tb's own backend (tb
+// is this spec's subtest *testing.T, handed in by runSpecRecovered's t.Run) so every assertion helper —
+// all of which read c.backend/e.ctx.backend at call time, never cache it — fails tb, not the parent.
+// That is what makes the Goexit land in this subtest's goroutine instead of the parent's. Restored
+// before returning so the next spec in this group (back in the parent's goroutine) sees the parent's
+// backend/T again, exactly as Context.Reset already does for the analogous runIsolatedCase case.
+func runSpecBody(ctx *Context, tb testing.TB, s step) (message, output string) {
+	subBackend := asTestBackend(tb)
+	defer putTestBackend(subBackend)
+	prevBackend, prevT := ctx.backend, ctx.T
+	ctx.backend = subBackend
+	if t, ok := tb.(*testing.T); ok {
+		ctx.T = t
+	}
+	defer func() {
+		ctx.backend, ctx.T = prevBackend, prevT
+	}()
+	return runStepRecovered(ctx, s, "panic")
 }
 
 // runAfterRecovered runs a group's after hooks in reverse order, recovering each individually.

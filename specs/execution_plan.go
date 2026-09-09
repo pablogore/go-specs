@@ -274,12 +274,51 @@ func runExecutionContext(runCtx context.Context, backend testBackend, rep report
 		ctx.Reset(nil)
 		contextPool.Put(ctx)
 	}()
-	ctx.Reset(backend)
-	ctx.SetPathValues(PathValues{})
 	started := reportSpecStarted(rep, name, path)
-	message, output := runProgram(program, ctx, nil)
+	message, output := runSpecProgram(backend, ctx, program, name)
 	reportSpecFinished(rep, started, specResult{Failed: ctx.failed, Message: message, Output: output})
 	return proposalControllerResult{}
+}
+
+// runSpecProgram runs program for one ExecutionPlan spec against ctx, isolated in its own subtest
+// when backend wraps a real *testing.T (#74) — same gate runIsolatedCase already uses (see this
+// function's mirror, runSpecRecovered, in runner.go) — so a real Fatalf/FailNow (runtime.Goexit)
+// inside program unwinds only that subtest's goroutine, letting the remaining specs in this plan
+// still run and be reported. A fake backend (e.g. controlledBackend, whose Run is a no-op) or a
+// *testing.B falls back to running program directly against ctx/backend, same as before this
+// isolation existed.
+func runSpecProgram(backend testBackend, ctx *Context, program []Instruction, name string) (message, output string) {
+	real, ok := backend.(*runnableBackend)
+	if !ok {
+		ctx.Reset(backend)
+		ctx.SetPathValues(PathValues{})
+		return runProgram(program, ctx, nil)
+	}
+	t, ok := real.tb.(*testing.T)
+	if !ok {
+		ctx.Reset(backend)
+		ctx.SetPathValues(PathValues{})
+		return runProgram(program, ctx, nil)
+	}
+	return runSpecProgramIsolated(t, ctx, program, name)
+}
+
+// runSpecProgramIsolated creates the real subtest and runs program inside it. Split out from
+// runSpecProgram because the closure below captures named returns by reference: if it lived directly
+// in runSpecProgram, Go's escape analysis would heap-allocate that function's message/output for
+// every call — including the non-*testing.T fast paths above that never reach this line — since
+// escape analysis decides a variable's storage class for the whole function, not per branch. Keeping
+// the capture inside its own function scopes that heap allocation to the isolation path only (see the
+// identical split for runner.go's runSpecRecovered/runSpecIsolated).
+func runSpecProgramIsolated(t *testing.T, ctx *Context, program []Instruction, name string) (message, output string) {
+	t.Run(name, func(subT *testing.T) {
+		subBackend := asTestBackend(subT)
+		defer putTestBackend(subBackend)
+		ctx.Reset(subBackend)
+		ctx.SetPathValues(PathValues{})
+		message, output = runProgram(program, ctx, nil)
+	})
+	return
 }
 
 // specEventName returns plan.Names[i], or "" for a plan built without per-spec metadata (e.g. a

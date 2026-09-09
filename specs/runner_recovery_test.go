@@ -231,3 +231,113 @@ func TestRunnerRunRecoversPanicAcrossGroupsRealProcess(t *testing.T) {
 		t.Fatalf("expected the second group to still run (process must not crash), got: %s", output)
 	}
 }
+
+// TestRunnerRunRealFatalfIsolatesJustThatSpecRealProcess proves #74's fix end-to-end: a real
+// assertion failure (EqualTo, which calls Fatalf under the hood) inside one spec, against a genuine
+// *testing.T (not a fake), no longer terminates the whole Runner.Run call. Spec bodies now each run
+// in their own subtest (see runSpecRecovered), so Goexit only unwinds that subtest's goroutine — the
+// remaining specs in the group still run, and every spec, including the failing one, still gets a
+// SpecFinished event. Same subprocess pattern as TestRunnerRunRecoversPanicAcrossGroupsRealProcess: a
+// nested t.Run's real Fatalf would otherwise mark this outer test failed itself, which would make
+// "did isolation work" indistinguishable from "did this test fail for an unrelated reason."
+func TestRunnerRunRealFatalfIsolatesJustThatSpecRealProcess(t *testing.T) {
+	if os.Getenv("GO_SPECS_RUNNER_FATALF_ISOLATION_HELPER") == "1" {
+		var rep recordingReporter
+		prog := &Program{
+			Groups: []group{
+				{
+					specs: []step{
+						func(ctx *Context) { EqualTo(ctx, 1, 2) },
+						func(*Context) { fmt.Println("spec2 ran") },
+						func(*Context) { fmt.Println("spec3 ran") },
+					},
+					names: []string{"spec one", "spec two", "spec three"},
+				},
+			},
+		}
+		NewRunnerWithReporter(prog, "suite", &rep).Run(t)
+		fmt.Printf("suite finished total=%d failed=%d\n", rep.suiteFinished[0].TotalSpecs, rep.suiteFinished[0].FailedSpecs)
+		return
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestRunnerRunRealFatalfIsolatesJustThatSpecRealProcess$")
+	cmd.Env = append(os.Environ(), "GO_SPECS_RUNNER_FATALF_ISOLATION_HELPER=1")
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected the failing spec to fail the process, but it passed: %s", output)
+	}
+	if !strings.Contains(string(output), "spec2 ran") || !strings.Contains(string(output), "spec3 ran") {
+		t.Fatalf("expected specs 2 and 3 to still run after spec 1's real Fatal, got: %s", output)
+	}
+	if !strings.Contains(string(output), "suite finished total=3 failed=1") {
+		t.Fatalf("expected SuiteFinished to report total=3 failed=1 (every spec still reported), got: %s", output)
+	}
+}
+
+// TestRunnerRunFailFastStopsAfterRealFatalfRealProcess proves isolation and FailFast compose
+// correctly: EqualTo's recordFailure() sets ctx.failed synchronously before the Fatalf call that
+// triggers Goexit (not learned via recover), and t.Run blocks until the subtest's goroutine
+// finishes — so runSpecsRecovered's failFast check, running right after runSpecRecovered returns,
+// sees the correct value and stops before spec2, exactly as it would have without isolation.
+func TestRunnerRunFailFastStopsAfterRealFatalfRealProcess(t *testing.T) {
+	if os.Getenv("GO_SPECS_RUNNER_FATALF_FAILFAST_HELPER") == "1" {
+		var rep recordingReporter
+		prog := &Program{
+			Groups: []group{
+				{
+					specs: []step{
+						func(ctx *Context) { EqualTo(ctx, 1, 2) },
+						func(*Context) { fmt.Println("spec2 ran") },
+					},
+					names: []string{"spec one", "spec two"},
+				},
+			},
+		}
+		r := NewRunnerWithReporter(prog, "suite", &rep)
+		r.FailFast = true
+		r.Run(t)
+		fmt.Printf("suite finished total=%d failed=%d\n", rep.suiteFinished[0].TotalSpecs, rep.suiteFinished[0].FailedSpecs)
+		return
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestRunnerRunFailFastStopsAfterRealFatalfRealProcess$")
+	cmd.Env = append(os.Environ(), "GO_SPECS_RUNNER_FATALF_FAILFAST_HELPER=1")
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected the failing spec to fail the process, but it passed: %s", output)
+	}
+	if strings.Contains(string(output), "spec2 ran") {
+		t.Fatalf("expected FailFast to stop spec2 from running after spec1's real Fatal, got: %s", output)
+	}
+	if !strings.Contains(string(output), "suite finished total=1 failed=1") {
+		t.Fatalf("expected SuiteFinished to report total=1 failed=1 (only the failed spec reported before FailFast stopped), got: %s", output)
+	}
+}
+
+// TestRunnerRunSpecNamesWithSpacesAndSlashesReportedVerbatim proves a real *testing.T subtest per
+// spec (used for isolation, see runSpecRecovered) never leaks into reported spec identity: Go's
+// t.Run sanitizes spaces to "_" and treats "/" as a nested-subtest boundary for -v/-run/test2json
+// presentation, but SpecStartEvent/SpecResultEvent.Name always comes straight from group.names, so
+// none of that shows up in the reported event. No subprocess needed — neither spec fails.
+func TestRunnerRunSpecNamesWithSpacesAndSlashesReportedVerbatim(t *testing.T) {
+	var rep recordingReporter
+	prog := &Program{
+		Groups: []group{
+			{
+				specs: []step{func(*Context) {}, func(*Context) {}},
+				names: []string{"spec with spaces", "spec/with/slashes"},
+			},
+		},
+	}
+	NewRunnerWithReporter(prog, "suite", &rep).Run(t)
+
+	if len(rep.specStarted) != 2 {
+		t.Fatalf("expected 2 SpecStarted events, got %d", len(rep.specStarted))
+	}
+	if got := rep.specStarted[0].Name; got != "spec with spaces" {
+		t.Fatalf("expected reported name %q, got %q", "spec with spaces", got)
+	}
+	if got := rep.specStarted[1].Name; got != "spec/with/slashes" {
+		t.Fatalf("expected reported name %q, got %q", "spec/with/slashes", got)
+	}
+}
