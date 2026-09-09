@@ -45,14 +45,15 @@ func NewRunnerWithReporter(program *Program, name string, rep report.EventReport
 // reporterObserver adapts a report.EventReporter to specExecutionObserver, serializing calls with a
 // mutex: a parallel group's goroutines call specStarted/specFinished concurrently, and not every
 // EventReporter implementation can be assumed to be concurrency-safe on its own — the framework
-// serializes on its behalf instead of expanding EventReporter's contract to require it. total/failed
-// tally every reported spec (sequential and parallel alike, since both paths share one instance via
-// ctx.execObserver) for the run's SuiteEndEvent.
+// serializes on its behalf instead of expanding EventReporter's contract to require it. total/failed/
+// skipped tally every reported spec (sequential and parallel alike, since both paths share one
+// instance via ctx.execObserver) for the run's SuiteEndEvent. total counts passed+failed+skipped.
 type reporterObserver struct {
-	mu     sync.Mutex
-	rep    report.EventReporter
-	total  int
-	failed int
+	mu      sync.Mutex
+	rep     report.EventReporter
+	total   int
+	failed  int
+	skipped int
 }
 
 func (o *reporterObserver) specStarted(name string) report.SpecStartEvent {
@@ -71,6 +72,20 @@ func (o *reporterObserver) specFinished(start report.SpecStartEvent, failed bool
 		o.failed++
 	}
 	o.rep.SpecFinished(report.SpecResultEvent{SpecStartEvent: start, Failed: failed, Duration: time.Since(start.Time)})
+}
+
+// specSkipped reports a compile-time-skipped spec: SpecStarted immediately followed by
+// SpecFinished{Skipped: true}, reusing the exact same SpecStartEvent for both (same invariant
+// specStarted/specFinished hold for a real spec) — Duration is left at its zero value, since no
+// body ever ran between them, and Failed is always false.
+func (o *reporterObserver) specSkipped(name string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	e := report.SpecStartEvent{Name: name, Time: time.Now()}
+	o.rep.SpecStarted(e)
+	o.total++
+	o.skipped++
+	o.rep.SpecFinished(report.SpecResultEvent{SpecStartEvent: e, Skipped: true})
 }
 
 var _ specExecutionObserver = (*reporterObserver)(nil)
@@ -112,11 +127,12 @@ func (r *Runner) Run(tb testing.TB) {
 	r.Reporter.SuiteStarted(report.SuiteStartEvent{Name: name, Time: suiteStart})
 	runGroups(ctx, r.program.Groups)
 	r.Reporter.SuiteFinished(report.SuiteEndEvent{
-		Name:        name,
-		Time:        time.Now(),
-		Duration:    time.Since(suiteStart),
-		TotalSpecs:  obs.total,
-		FailedSpecs: obs.failed,
+		Name:         name,
+		Time:         time.Now(),
+		Duration:     time.Since(suiteStart),
+		TotalSpecs:   obs.total,
+		FailedSpecs:  obs.failed,
+		SkippedSpecs: obs.skipped,
 	})
 }
 
@@ -150,9 +166,15 @@ func runGroups(ctx *Context, groups []group) {
 // t.Fatal/FailNow (runtime.Goexit unwinds through this defer same as a panic would), after gets a
 // chance to clean up whatever before did set up. Each after hook is recovered individually, so one
 // panicking after hook doesn't stop its siblings from attempting to run.
+//
+// g.skipped is reported first, before before even runs: those names carry no before/after of their
+// own (see builder.go's finalize), so their identity as skipped must not depend on whether this
+// group's unrelated before hook — which they were only attached to for compilation reasons —
+// succeeds, fails, or FailFast ends up skipping the rest of this group.
 func runGroup(ctx *Context, g *group) {
 	defer runAfterRecovered(ctx, g.after)
 
+	reportSkipped(ctx, g)
 	if !runBeforeRecovered(ctx, g.before) {
 		return
 	}
@@ -160,6 +182,20 @@ func runGroup(ctx *Context, g *group) {
 		return
 	}
 	runSpecsRecovered(ctx, g)
+}
+
+// reportSkipped reports each of g.skipped as its own SpecStarted/SpecFinished{Skipped: true} pair.
+// A skipped spec was never compiled into a step (see builder.go's finalize), so there is nothing to
+// run for it here — only its identity is reported, via ctx.execObserver same as any other spec. A
+// nil execObserver (no Reporter attached) means nothing happens at all, same as any unreported spec.
+func reportSkipped(ctx *Context, g *group) {
+	obs := ctx.execObserver
+	if obs == nil {
+		return
+	}
+	for _, name := range g.skipped {
+		obs.specSkipped(name)
+	}
 }
 
 // runBeforeRecovered runs a group's before hooks in order. Returns false if a panic stopped setup

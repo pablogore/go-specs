@@ -155,10 +155,12 @@ func (b *Builder) It(name string, fn interface{}) {
 	})
 }
 
-// SkipIt registers a spec that is skipped at compile time (no steps emitted).
+// SkipIt registers a spec that is skipped at compile time: fn is never compiled into any step (it
+// never runs, so it doesn't need to be a valid func — see Skip), but name is preserved so the
+// compiled Program can still report the spec's identity as skipped. See finalize.
 func (b *Builder) SkipIt(name string, fn func(*Context)) {
 	b.ensureScope()
-	b.pending = append(b.pending, specItem{kind: kindSkip})
+	b.pending = append(b.pending, specItem{kind: kindSkip, name: name})
 }
 
 // FIt registers a focused spec. If any spec is focused, only focused specs are compiled into the program.
@@ -209,7 +211,18 @@ func (b *Builder) hookKey() string {
 	return string(buf)
 }
 
-// finalize builds program.Groups from pending: focus filter, drop skip, coalesce same-hook specs, group parallel.
+// finalize builds program.Groups from pending: focus filter, coalesce same-hook specs, group
+// parallel, and attach skip names to whichever group they end up nearest to.
+//
+// A kindSkip item never becomes a step (it has no before/after/spec — SkipIt never captures them),
+// so it can't form its own execution unit the way a real spec does. Instead its name is buffered in
+// pendingSkips and attached to the next group finalize creates or appends to (normal/focus/parallel
+// alike), then the buffer is cleared. This deliberately does NOT give skip its own group: doing so
+// would insert a group boundary between two coalesced same-hookKey specs (e.g. It("a"), SkipIt("b"),
+// It("c") in the same Describe), which would make their shared before/after run twice instead of
+// once — see TestProgram_SkipRemoval / TestSkipRemovesSpecs, which pin the coalesced-group-count
+// invariant this must not break. Any pendingSkips left over once every item is processed (trailing
+// skips, or an all-skip Describe) become their own skip-only group at the end.
 func (b *Builder) finalize() {
 	items := b.pending
 	if b.hasFocus {
@@ -223,9 +236,11 @@ func (b *Builder) finalize() {
 	}
 	var groups []group
 	curIdx := -1
+	var pendingSkips []string
 	for i := 0; i < len(items); i++ {
 		it := items[i]
 		if it.kind == kindSkip {
+			pendingSkips = append(pendingSkips, it.name)
 			continue
 		}
 		if it.kind == kindParallel {
@@ -242,7 +257,8 @@ func (b *Builder) finalize() {
 			// which reports each real ItParallel spec itself (via ctx.execObserver) as it runs on
 			// its own goroutine. Runner.Run's sequential per-spec reporting only fires when names
 			// is populated, so it correctly stays out of the way here instead of double-reporting.
-			groups = append(groups, group{specs: []step{parallelStep(parSteps, parNames)}})
+			groups = append(groups, group{specs: []step{parallelStep(parSteps, parNames)}, skipped: pendingSkips})
+			pendingSkips = nil
 			i = j - 1
 			continue
 		}
@@ -250,10 +266,16 @@ func (b *Builder) finalize() {
 		if curIdx >= 0 && groups[curIdx].hookKey == it.hookKey {
 			groups[curIdx].specs = append(groups[curIdx].specs, it.spec)
 			groups[curIdx].names = append(groups[curIdx].names, it.name)
+			groups[curIdx].skipped = append(groups[curIdx].skipped, pendingSkips...)
+			pendingSkips = nil
 		} else {
-			groups = append(groups, group{before: it.before, specs: []step{it.spec}, names: []string{it.name}, after: it.after, hookKey: it.hookKey})
+			groups = append(groups, group{before: it.before, specs: []step{it.spec}, names: []string{it.name}, after: it.after, hookKey: it.hookKey, skipped: pendingSkips})
+			pendingSkips = nil
 			curIdx = len(groups) - 1
 		}
+	}
+	if len(pendingSkips) > 0 {
+		groups = append(groups, group{skipped: pendingSkips})
 	}
 	b.program.Groups = groups
 }

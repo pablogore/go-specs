@@ -290,4 +290,164 @@ func TestRunnerNilReporterNoObserver(t *testing.T) {
 	}
 }
 
+// TestRunnerWithReporterReportsSkippedSpec proves a SkipIt spec is reported as its own
+// SpecStarted/SpecFinished{Skipped: true, Failed: false} pair, with its name preserved and its body
+// never run — and that it's counted in SuiteEndEvent.TotalSpecs/SkippedSpecs alongside real specs.
+func TestRunnerWithReporterReportsSkippedSpec(t *testing.T) {
+	var ranSkipped bool
+	rep := &recordingReporter{}
+	prog := BuildProgram(func(b *Builder) {
+		b.Describe("Suite", func() {
+			b.It("a", func(ctx *Context) {})
+			b.SkipIt("b", func(ctx *Context) { ranSkipped = true })
+			b.It("c", func(ctx *Context) {})
+		})
+	})
+
+	NewRunnerWithReporter(prog, "Suite", rep).Run(t)
+
+	if ranSkipped {
+		t.Fatal("expected the skipped spec's body to never run")
+	}
+	if len(rep.specStarted) != 3 || len(rep.specFinished) != 3 {
+		t.Fatalf("expected three SpecStarted/SpecFinished (a, b, c), got started=%+v finished=%+v", rep.specStarted, rep.specFinished)
+	}
+	var skip *report.SpecResultEvent
+	for i := range rep.specFinished {
+		if rep.specFinished[i].Name == "b" {
+			skip = &rep.specFinished[i]
+		}
+	}
+	if skip == nil {
+		t.Fatalf("expected a SpecFinished named %q, got %+v", "b", rep.specFinished)
+	}
+	if !skip.Skipped {
+		t.Errorf("expected Skipped=true for %q, got %+v", "b", *skip)
+	}
+	if skip.Failed {
+		t.Errorf("expected Failed=false for a skipped spec, got %+v", *skip)
+	}
+	if skip.Duration != 0 {
+		t.Errorf("expected Duration=0 for a skipped spec (no body ran), got %v", skip.Duration)
+	}
+	if len(rep.suiteFinished) != 1 {
+		t.Fatalf("expected one SuiteFinished, got %+v", rep.suiteFinished)
+	}
+	end := rep.suiteFinished[0]
+	if end.TotalSpecs != 3 || end.FailedSpecs != 0 || end.SkippedSpecs != 1 {
+		t.Fatalf("expected TotalSpecs=3 (a,b,c) FailedSpecs=0 SkippedSpecs=1, got %+v", end)
+	}
+}
+
+// TestRunnerWithReporterCountsMixedPassFailSkip proves TotalSpecs/FailedSpecs/SkippedSpecs combine
+// correctly when a suite mixes a passing, a failing, and a skipped spec — TotalSpecs is the sum of
+// all three categories, not just executed (passed+failed) specs.
+func TestRunnerWithReporterCountsMixedPassFailSkip(t *testing.T) {
+	rep := &recordingReporter{}
+	prog := BuildProgram(func(b *Builder) {
+		b.Describe("Suite", func() {
+			b.It("passes", func(ctx *Context) {})
+			b.It("fails", func(ctx *Context) { ctx.recordFailure() })
+			b.SkipIt("skipped", func(ctx *Context) {})
+		})
+	})
+
+	NewRunnerWithReporter(prog, "Suite", rep).Run(t)
+
+	if len(rep.suiteFinished) != 1 {
+		t.Fatalf("expected one SuiteFinished, got %+v", rep.suiteFinished)
+	}
+	end := rep.suiteFinished[0]
+	if end.TotalSpecs != 3 || end.FailedSpecs != 1 || end.SkippedSpecs != 1 {
+		t.Fatalf("expected TotalSpecs=3 FailedSpecs=1 SkippedSpecs=1, got %+v", end)
+	}
+}
+
+// TestRunnerWithReporterReportsMultipleSkips proves several SkipIt specs in the same suite are each
+// reported individually, by name, not collapsed into one event or one count.
+func TestRunnerWithReporterReportsMultipleSkips(t *testing.T) {
+	rep := &recordingReporter{}
+	prog := BuildProgram(func(b *Builder) {
+		b.Describe("Suite", func() {
+			b.SkipIt("skip1", func(ctx *Context) {})
+			b.It("runs", func(ctx *Context) {})
+			b.SkipIt("skip2", func(ctx *Context) {})
+			b.SkipIt("skip3", func(ctx *Context) {})
+		})
+	})
+
+	NewRunnerWithReporter(prog, "Suite", rep).Run(t)
+
+	var skipNames []string
+	for _, e := range rep.specFinished {
+		if e.Skipped {
+			skipNames = append(skipNames, e.Name)
+		}
+	}
+	sort.Strings(skipNames)
+	want := []string{"skip1", "skip2", "skip3"}
+	if len(skipNames) != len(want) {
+		t.Fatalf("expected skipped names %v, got %v (all finished: %+v)", want, skipNames, rep.specFinished)
+	}
+	for i := range want {
+		if skipNames[i] != want[i] {
+			t.Fatalf("expected skipped names %v, got %v", want, skipNames)
+		}
+	}
+	end := rep.suiteFinished[0]
+	if end.TotalSpecs != 4 || end.SkippedSpecs != 3 {
+		t.Fatalf("expected TotalSpecs=4 SkippedSpecs=3, got %+v", end)
+	}
+}
+
+// TestRunShardWithReporterCountsOnlyShardSkips proves a shard's SuiteEndEvent.SkippedSpecs (and
+// reported SpecFinished{Skipped:true} events) reflect only the skips in groups assigned to that
+// shard, not every skip in the unsharded Program — RunShard/RunShardWithReporter shard whole groups
+// (see scheduler.go), and a group's skipped names travel with it like any other group data, so this
+// is the same "shard describes only what it ran" contract TestRunShardWithReporterCountsOnlyShardSpecs
+// already pins for real specs, extended to skips.
+func TestRunShardWithReporterCountsOnlyShardSkips(t *testing.T) {
+	// shardCount == len(Groups) so shard i gets exactly group i (gi%shardCount==shardIndex), keeping
+	// which skip lands on which shard unambiguous.
+	prog := &Program{Groups: []group{
+		{skipped: []string{"skip-a"}},
+		{specs: []step{func(*Context) {}}, names: []string{"b"}},
+		{skipped: []string{"skip-c"}},
+		{specs: []step{func(*Context) {}}, names: []string{"d"}},
+	}}
+
+	rep := &recordingReporter{}
+	RunShardWithReporter(prog, t, 0, 4, "Shard0", rep)
+
+	if len(rep.specFinished) != 1 || rep.specFinished[0].Name != "skip-a" || !rep.specFinished[0].Skipped {
+		t.Fatalf("expected shard 0 to report exactly skip-a as skipped, got %+v", rep.specFinished)
+	}
+	end := rep.suiteFinished[0]
+	if end.TotalSpecs != 1 || end.SkippedSpecs != 1 {
+		t.Fatalf("expected shard 0 TotalSpecs=1 SkippedSpecs=1 (only skip-a's group), got %+v", end)
+	}
+
+	rep2 := &recordingReporter{}
+	RunShardWithReporter(prog, t, 2, 4, "Shard2", rep2)
+
+	if len(rep2.specFinished) != 1 || rep2.specFinished[0].Name != "skip-c" || !rep2.specFinished[0].Skipped {
+		t.Fatalf("expected shard 2 to report exactly skip-c as skipped, got %+v", rep2.specFinished)
+	}
+	end2 := rep2.suiteFinished[0]
+	if end2.TotalSpecs != 1 || end2.SkippedSpecs != 1 {
+		t.Fatalf("expected shard 2 TotalSpecs=1 SkippedSpecs=1 (only skip-c's group), got %+v", end2)
+	}
+
+	rep3 := &recordingReporter{}
+	RunShardWithReporter(prog, t, 1, 4, "Shard1", rep3)
+
+	if len(rep3.specFinished) != 1 || rep3.specFinished[0].Skipped {
+		t.Fatalf("expected shard 1 (group b) to report zero skips, got %+v", rep3.specFinished)
+	}
+	end3 := rep3.suiteFinished[0]
+	if end3.SkippedSpecs != 0 {
+		t.Fatalf("expected shard 1 SkippedSpecs=0, got %+v", end3)
+	}
+}
+
 var _ report.EventReporter = (*recordingReporter)(nil)
