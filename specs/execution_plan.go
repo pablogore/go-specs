@@ -256,9 +256,9 @@ func runExecutionContext(runCtx context.Context, backend testBackend, rep report
 				// then-retried or intermediate Explore candidates would misrepresent how many
 				// executions actually happened, how long the suite really took, and where a
 				// failure occurred.
-				reportSpecStarted(rep, name, path)
+				started := reportSpecStarted(rep, name, path)
 				result := runIsolatedCase(backend, program, candidate.Values)
-				reportSpecFinished(rep, name, path, result.Failed)
+				reportSpecFinished(rep, started, result.Failed)
 				return !result.Failed
 			},
 			AdmitFeedback: func(feedback proposalFeedback) {
@@ -273,9 +273,9 @@ func runExecutionContext(runCtx context.Context, backend testBackend, rep report
 	}()
 	ctx.Reset(backend)
 	ctx.SetPathValues(PathValues{})
-	reportSpecStarted(rep, name, path)
+	started := reportSpecStarted(rep, name, path)
 	runProgram(program, ctx, nil)
-	reportSpecFinished(rep, name, path, ctx.failed)
+	reportSpecFinished(rep, started, ctx.failed)
 	return proposalControllerResult{}
 }
 
@@ -297,21 +297,23 @@ func specEventPath(plan *ExecutionPlan, i int) []string {
 	return strings.Split(plan.FullNames[i], "/")
 }
 
-func reportSpecStarted(rep report.EventReporter, name string, path []string) {
+// reportSpecStarted emits SpecStarted and returns the event it sent, so reportSpecFinished can
+// reuse its Time — SpecResultEvent embeds SpecStartEvent, and that Time means when the spec
+// started, not when it finished.
+func reportSpecStarted(rep report.EventReporter, name string, path []string) report.SpecStartEvent {
 	if rep == nil {
-		return
+		return report.SpecStartEvent{}
 	}
-	rep.SpecStarted(report.SpecStartEvent{Name: name, Path: path, Time: time.Now()})
+	e := report.SpecStartEvent{Name: name, Path: path, Time: time.Now()}
+	rep.SpecStarted(e)
+	return e
 }
 
-func reportSpecFinished(rep report.EventReporter, name string, path []string, failed bool) {
+func reportSpecFinished(rep report.EventReporter, start report.SpecStartEvent, failed bool) {
 	if rep == nil {
 		return
 	}
-	rep.SpecFinished(report.SpecResultEvent{
-		SpecStartEvent: report.SpecStartEvent{Name: name, Path: path, Time: time.Now()},
-		Failed:         failed,
-	})
+	rep.SpecFinished(report.SpecResultEvent{SpecStartEvent: start, Failed: failed})
 }
 
 // runProgram executes one spec's instructions directly in the caller's goroutine (the default,
