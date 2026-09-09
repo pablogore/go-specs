@@ -1,30 +1,30 @@
 # ARCHITECTURE.md
 
-This document describes the monorepo layout and module boundaries for `go-specs`.
+This document describes the repository layout and package boundaries for `go-specs`.
 
 ---
 
 ## Monorepo Layout
 
-The repository is a **multi-module Go workspace** (no root `go.mod`). A root `go.work` includes all modules so that `go build` and `go test` resolve local modules without publishing.
+The repository is a **single Go module** (`github.com/pablogore/go-specs`, root `go.mod`). There is no `go.work` and no per-package `go.mod`; every directory below is a regular package within that one module.
 
 ```
 go-specs
-├── specs        # runner + DSL (module: github.com/pablogore/go-specs/specs)
-├── assert       # core assertions / matchers (module: github.com/pablogore/go-specs/assert)
-├── gen          # value generators for property testing (module: github.com/pablogore/go-specs/gen)
-├── snapshots    # snapshot storage and comparison (module: github.com/pablogore/go-specs/snapshots)
-├── mock         # mocking utilities (module: github.com/pablogore/go-specs/mock)
-├── report/      # event types and reporter (module: github.com/pablogore/go-specs/report)
+├── specs        # runner + DSL (package: github.com/pablogore/go-specs/specs)
+├── assert       # core assertions / matchers (package: github.com/pablogore/go-specs/assert)
+├── gen          # value generators for property testing (package: github.com/pablogore/go-specs/gen)
+├── snapshots    # snapshot storage and comparison (package: github.com/pablogore/go-specs/snapshots)
+├── mock         # mocking utilities (package: github.com/pablogore/go-specs/mock)
+├── report/      # event types and reporter (package: github.com/pablogore/go-specs/report)
 ├── benchmarks/  # performance benchmarks (go-specs vs Testify vs Gomega)
-├── examples/    # usage examples (module: github.com/pablogore/go-specs/examples)
+├── examples/    # usage examples (package: github.com/pablogore/go-specs/examples)
 └── tools/
-    └── specs-cli/   # CLI (module: github.com/pablogore/go-specs/tools/specs-cli)
+    └── specs-cli/   # CLI (package: github.com/pablogore/go-specs/tools/specs-cli)
 ```
 
 ---
 
-## Module Dependencies
+## Package Dependencies
 
 - **specs** → assert, report, snapshots
 - **assert** → (none)
@@ -51,7 +51,7 @@ Public import paths are unchanged for compatibility:
 - `github.com/pablogore/go-specs/gen/generators`
 - `github.com/pablogore/go-specs/snapshots`
 
-Internal code lives under the specs module and uses:
+Internal code lives under the specs package and uses:
 
 - `github.com/pablogore/go-specs/specs/internal/registry`
 
@@ -59,10 +59,10 @@ Internal code lives under the specs module and uses:
 
 ## Build and Test
 
-From repo root (with `go.work` in effect):
+From repo root:
 
-- **Build:** `go build ./assert/... ./specs/... ./report/... ./mock/... ./gen/... ./snapshots/... ./benchmarks/... ./examples/... ./tools/specs-cli/...`
-- **Test:** `go test ./assert/... ./specs/... ./report/... ./mock/... ./gen/... ./snapshots/... ./benchmarks/... ./examples/...`
+- **Build:** `go build ./...`
+- **Test:** `go test ./...`
 - **Bench:** `go test ./benchmarks -run='^$' -bench=. -benchmem`
 - **CLI:** `go build -o specs-cli ./tools/specs-cli`
 
