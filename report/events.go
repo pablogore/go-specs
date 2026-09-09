@@ -10,11 +10,12 @@ type SuiteStartEvent struct {
 
 // SuiteEndEvent is emitted when a suite finishes executing.
 type SuiteEndEvent struct {
-	Name        string
-	Time        time.Time
-	Duration    time.Duration // elapsed time between this suite's SuiteStartEvent and this event
-	TotalSpecs  int
-	FailedSpecs int
+	Name         string
+	Time         time.Time
+	Duration     time.Duration // elapsed time between this suite's SuiteStartEvent and this event
+	TotalSpecs   int           // passed + failed + skipped
+	FailedSpecs  int
+	SkippedSpecs int
 }
 
 // SpecStartEvent captures the start of an individual spec (It/Then).
@@ -32,7 +33,8 @@ type SpecStartEvent struct {
 type SpecResultEvent struct {
 	SpecStartEvent
 	Failed   bool
-	Duration time.Duration // elapsed time between SpecStartEvent.Time and this event
+	Skipped  bool          // true for a compile-time SkipIt/Skip spec: body never ran, Duration is 0, Failed is always false
+	Duration time.Duration // elapsed time between SpecStartEvent.Time and this event; always 0 when Skipped
 	Message  string
 }
 

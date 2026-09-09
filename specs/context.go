@@ -70,6 +70,7 @@ func (c *Context) Reset(backend testBackend) {
 	c.T = nil
 	c.coverage = nil
 	c.failed = false
+	c.failFast = false
 	c.execObserver = nil
 	if backend != nil {
 		// runnableBackend wraps the subtest T; unwrap so ctx.T points to the current subtest.

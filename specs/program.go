@@ -19,12 +19,19 @@ type step func(*Context)
 // names holds one entry per group.specs entry (SpecStartEvent.Name), or is left nil for a group
 // whose single spec is a parallelStep closure: that closure reports each real spec itself (see
 // parallelStep), so Runner.Run's sequential per-spec reporting must not also wrap it.
+//
+// skipped holds the names of compile-time-skipped specs (SkipIt/Skip) that finalize attached to
+// this group — see builder.go's finalize for why a skip can't have its own group. They carry no
+// before/spec/after of their own and never touch this group's before/after; Runner reports them
+// (SpecStarted+SpecFinished{Skipped:true}, no body run) independently of whether this group's real
+// specs run at all.
 type group struct {
 	before  []step
 	specs   []step
 	names   []string
 	after   []step
 	hookKey string
+	skipped []string
 }
 
 // specName returns names[i], or "" when names doesn't cover index i (an unnamed spec, e.g. from
@@ -44,6 +51,11 @@ func specName(names []string, i int) string {
 type specExecutionObserver interface {
 	specStarted(name string) report.SpecStartEvent
 	specFinished(start report.SpecStartEvent, failed bool)
+	// specSkipped reports one compile-time-skipped spec (SkipIt/Skip): a single SpecStarted +
+	// SpecFinished{Skipped: true} pair, with no body ever run. Only Runner.Run's sequential group
+	// execution calls this (see runner.go's reportSkipped) — ItParallel/parallelStep has no skip
+	// concept, so it never needs it.
+	specSkipped(name string)
 }
 
 // Program is a compiled execution program. Groups run in order; within a group: before once, all specs, after once (reverse).
