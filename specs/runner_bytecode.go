@@ -6,7 +6,9 @@
 package specs
 
 import (
+	"fmt"
 	"runtime"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -22,8 +24,12 @@ func NewBytecodeRunner(p BCProgram) *BytecodeRunner {
 	return &BytecodeRunner{program: p}
 }
 
-// Run executes all instructions in order. One context from the pool, reused for every instruction.
-// No allocations in the loop; bounds-check elimination applies to the index loop.
+// Run executes all specs in order. One context from the pool, reused for every spec.
+//
+// A panic anywhere in one spec's instruction range is recovered instead of crashing the process:
+// it's recorded as a failure (via ctx.recordFailure + ctx.backend.Errorf, message and stack trace),
+// and the next spec still runs. Recovery is per spec, not per instruction, matching RunParallel's
+// granularity.
 func (r *BytecodeRunner) Run(tb testing.TB) {
 	if r == nil || tb == nil || r.program.BCLen() == 0 {
 		return
@@ -38,8 +44,29 @@ func (r *BytecodeRunner) Run(tb testing.TB) {
 	ctx.Reset(backend)
 	ctx.SetPathValues(PathValues{})
 
-	code := r.program.Code
-	for i := 0; i < len(code); i++ {
+	runBytecodeSequential(ctx, r.program.Code, r.program.SpecStarts)
+}
+
+// runBytecodeSequential runs every spec's instruction range in order against ctx, recovering each
+// spec as a whole unit. Split out from Run so it can be tested without a real testing.TB.
+func runBytecodeSequential(ctx *Context, code []instruction, starts []int) {
+	nSpecs := len(starts) - 1
+	for si := 0; si < nSpecs; si++ {
+		runBytecodeSpecRecovered(ctx, code, starts[si], starts[si+1])
+	}
+}
+
+// runBytecodeSpecRecovered runs one spec's instruction range, recovering a panic so it fails just
+// this spec instead of crashing the process. isExpectedAbort sentinels (a controlled backend's
+// FailNow) are already recorded by the backend and must not be reported a second time.
+func runBytecodeSpecRecovered(ctx *Context, code []instruction, start, end int) {
+	defer func() {
+		if recovered := recover(); recovered != nil && !isExpectedAbort(recovered) {
+			ctx.recordFailure()
+			ctx.backend.Errorf("panic: %v\n%s", recovered, debug.Stack())
+		}
+	}()
+	for i := start; i < end; i++ {
 		if code[i].fn != nil {
 			code[i].fn(ctx)
 		}
@@ -110,11 +137,29 @@ func runBytecodeWorker(code []instruction, starts []int, nSpecs int, backend *pa
 		backend.specIndex = si
 		ctx.Reset(backend)
 		ctx.SetPathValues(PathValues{})
-		for i := start; i < end; i++ {
-			if code[i].fn != nil {
-				code[i].fn(ctx)
+		runBytecodeWorkerSpec(code, start, end, ctx, results, si)
+		ctx.Reset(nil)
+	}
+}
+
+// runBytecodeWorkerSpec runs one spec's instruction range, recovering the parallelAbort{} sentinel a
+// fatal assertion panics with when backend.abortOnFatal is set — an expected stop, already recorded
+// in results[idx], not a failure to report. Any other panic is recorded as an ordinary spec failure
+// instead of crashing the worker goroutine — which, since this runs inside a spawned goroutine, would
+// otherwise crash the entire process. Mirrors scheduler.go's runWorkerSpec.
+func runBytecodeWorkerSpec(code []instruction, start, end int, ctx *Context, results *[]string, idx int) {
+	defer func() {
+		switch r := recover(); r {
+		case nil, parallelAbort{}:
+		default:
+			if (*results)[idx] == "" {
+				(*results)[idx] = fmt.Sprintf("panic: %v", r)
 			}
 		}
-		ctx.Reset(nil)
+	}()
+	for i := start; i < end; i++ {
+		if code[i].fn != nil {
+			code[i].fn(ctx)
+		}
 	}
 }
