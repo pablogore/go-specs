@@ -1,0 +1,185 @@
+package specs
+
+import (
+	"sync"
+	"testing"
+
+	"github.com/pablogore/go-specs/report"
+)
+
+// recordingReporter is a report.EventReporter test double that records every event it receives,
+// so tests can assert on structured event data instead of parsing formatted strings.
+type recordingReporter struct {
+	mu            sync.Mutex
+	suiteStarted  []report.SuiteStartEvent
+	suiteFinished []report.SuiteEndEvent
+	specStarted   []report.SpecStartEvent
+	specFinished  []report.SpecResultEvent
+}
+
+func (r *recordingReporter) SuiteStarted(e report.SuiteStartEvent) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.suiteStarted = append(r.suiteStarted, e)
+}
+
+func (r *recordingReporter) SuiteFinished(e report.SuiteEndEvent) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.suiteFinished = append(r.suiteFinished, e)
+}
+
+func (r *recordingReporter) SpecStarted(e report.SpecStartEvent) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.specStarted = append(r.specStarted, e)
+}
+
+func (r *recordingReporter) SpecFinished(e report.SpecResultEvent) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.specFinished = append(r.specFinished, e)
+}
+
+var _ report.EventReporter = (*recordingReporter)(nil)
+
+// TestDescribeWithReporterEmitsSuiteAndSpecEventsForFlatSpec proves the reporter stored on
+// Spec/CompiledSuite actually reaches execution now: a single flat (non-Paths) spec emits exactly
+// one SpecStarted/SpecFinished pair, wrapped by one SuiteStarted/SuiteFinished pair reporting the
+// real spec count.
+func TestDescribeWithReporterEmitsSuiteAndSpecEventsForFlatSpec(t *testing.T) {
+	rep := &recordingReporter{}
+	DescribeWithReporter(t, "FlatSuite", rep, func(s *Spec) {
+		s.It("passes", func(ctx *Context) {})
+	})
+
+	if len(rep.suiteStarted) != 1 || rep.suiteStarted[0].Name != "FlatSuite" {
+		t.Fatalf("expected one SuiteStarted for FlatSuite, got %+v", rep.suiteStarted)
+	}
+	if len(rep.specStarted) != 1 || rep.specStarted[0].Name != "passes" {
+		t.Fatalf("expected one SpecStarted for 'passes', got %+v", rep.specStarted)
+	}
+	if len(rep.specFinished) != 1 || rep.specFinished[0].Name != "passes" || rep.specFinished[0].Failed {
+		t.Fatalf("expected one passing SpecFinished for 'passes', got %+v", rep.specFinished)
+	}
+	if len(rep.suiteFinished) != 1 {
+		t.Fatalf("expected one SuiteFinished, got %+v", rep.suiteFinished)
+	}
+	end := rep.suiteFinished[0]
+	if end.Name != "FlatSuite" || end.TotalSpecs != 1 || end.FailedSpecs != 0 {
+		t.Fatalf("expected FlatSuite TotalSpecs=1 FailedSpecs=0, got %+v", end)
+	}
+}
+
+// TestDescribeWithReporterMarksFailedFlatSpec proves a failing flat spec is reported as failed both
+// on its own SpecFinished event and in the enclosing SuiteEndEvent's FailedSpecs count.
+//
+// The spec body calls ctx.recordFailure() directly (what the framework's own Expect(...) matchers
+// do internally on a failed assertion) instead of ctx.T.Errorf/Fatalf: recordFailure only flips
+// Context's internal failed flag, so it exercises the same Failed-tracking path a real assertion
+// failure would without also failing this test's own *testing.T — which a real t.Errorf on the
+// generated subtest would do, since subtest failures bubble up to the parent test.
+func TestDescribeWithReporterMarksFailedFlatSpec(t *testing.T) {
+	rep := &recordingReporter{}
+	DescribeWithReporter(t, "FailingFlatSuite", rep, func(s *Spec) {
+		s.It("fails", func(ctx *Context) { ctx.recordFailure() })
+	})
+
+	if len(rep.specFinished) != 1 || !rep.specFinished[0].Failed {
+		t.Fatalf("expected one failing SpecFinished, got %+v", rep.specFinished)
+	}
+	if len(rep.suiteFinished) != 1 || rep.suiteFinished[0].FailedSpecs != 1 {
+		t.Fatalf("expected FailedSpecs=1, got %+v", rep.suiteFinished)
+	}
+}
+
+// TestDescribeWithReporterEmitsEventsPerCartesianCandidate proves Paths() reports every executed
+// candidate as its own spec execution — not just a single event for the whole generated spec.
+// Hiding intermediate candidates would misrepresent how many executions actually happened.
+func TestDescribeWithReporterEmitsEventsPerCartesianCandidate(t *testing.T) {
+	rep := &recordingReporter{}
+	DescribeWithReporter(t, "CartesianSuite", rep, func(s *Spec) {
+		s.Paths(func(pb *PathBuilder) {
+			pb.Values("tier", []any{"basic", "pro"})
+		}).It("includes tier", func(ctx *Context) {})
+	})
+
+	if len(rep.specStarted) != 2 {
+		t.Fatalf("expected 2 SpecStarted events (one per combo), got %d: %+v", len(rep.specStarted), rep.specStarted)
+	}
+	if len(rep.specFinished) != 2 {
+		t.Fatalf("expected 2 SpecFinished events (one per combo), got %d: %+v", len(rep.specFinished), rep.specFinished)
+	}
+	for _, e := range rep.specFinished {
+		if e.Failed {
+			t.Fatalf("expected all combos to pass, got %+v", e)
+		}
+		if e.Name != "includes tier" {
+			t.Fatalf("expected event name 'includes tier', got %q", e.Name)
+		}
+	}
+	if len(rep.suiteFinished) != 1 || rep.suiteFinished[0].TotalSpecs != 2 || rep.suiteFinished[0].FailedSpecs != 0 {
+		t.Fatalf("expected TotalSpecs=2 FailedSpecs=0, got %+v", rep.suiteFinished)
+	}
+}
+
+// TestDescribeWithReporterEmitsEventsPerSampleCandidate proves Sample() reports one
+// SpecStarted/SpecFinished pair per sample drawn, matching Explore/Sample's "every attempt is a
+// real execution" semantics.
+func TestDescribeWithReporterEmitsEventsPerSampleCandidate(t *testing.T) {
+	const samples = 4
+	rep := &recordingReporter{}
+	DescribeWithReporter(t, "SampleSuite", rep, func(s *Spec) {
+		builder := s.Paths(func(pb *PathBuilder) { pb.Bool("vip") })
+		builder.Sample(samples).Seed(7).It("sample case", func(ctx *Context) {})
+	})
+
+	if len(rep.specStarted) != samples {
+		t.Fatalf("expected %d SpecStarted events, got %d: %+v", samples, len(rep.specStarted), rep.specStarted)
+	}
+	if len(rep.specFinished) != samples {
+		t.Fatalf("expected %d SpecFinished events, got %d: %+v", samples, len(rep.specFinished), rep.specFinished)
+	}
+	if len(rep.suiteFinished) != 1 || rep.suiteFinished[0].TotalSpecs != samples {
+		t.Fatalf("expected TotalSpecs=%d, got %+v", samples, rep.suiteFinished)
+	}
+}
+
+// TestDescribeWithReporterStopsAtFirstFailingCandidate proves that when a generated candidate
+// fails, the reporter sees exactly that many SpecStarted/SpecFinished pairs — matching
+// proposalController's existing "stop at first failure" behavior instead of silently continuing
+// past it or reporting candidates that never ran.
+func TestDescribeWithReporterStopsAtFirstFailingCandidate(t *testing.T) {
+	rep := &recordingReporter{}
+	DescribeWithReporter(t, "FailingSampleSuite", rep, func(s *Spec) {
+		builder := s.Paths(func(pb *PathBuilder) { pb.Bool("vip") })
+		builder.Sample(5).Seed(7).It("always fails", func(ctx *Context) { ctx.recordFailure() })
+	})
+
+	if len(rep.specStarted) != len(rep.specFinished) {
+		t.Fatalf("expected matched SpecStarted/SpecFinished counts, got %d started, %d finished",
+			len(rep.specStarted), len(rep.specFinished))
+	}
+	if len(rep.specFinished) == 0 {
+		t.Fatal("expected at least one SpecFinished event")
+	}
+	last := rep.specFinished[len(rep.specFinished)-1]
+	if !last.Failed {
+		t.Fatalf("expected the last reported candidate to be the failing one, got %+v", last)
+	}
+	if len(rep.suiteFinished) != 1 || rep.suiteFinished[0].FailedSpecs != 1 {
+		t.Fatalf("expected exactly one FailedSpecs, got %+v", rep.suiteFinished)
+	}
+}
+
+// TestDescribeWithoutReporterEmitsNoEvents proves the default (no reporter) path stays exactly as
+// it was: passing a nil reporter causes no events, no panics, and no behavior change.
+func TestDescribeWithoutReporterEmitsNoEvents(t *testing.T) {
+	var ran bool
+	DescribeWithReporter(t, "NoReporterSuite", nil, func(s *Spec) {
+		s.It("runs", func(ctx *Context) { ran = true })
+	})
+	if !ran {
+		t.Fatal("expected the spec to still run with a nil reporter")
+	}
+}

@@ -14,6 +14,7 @@ type Spec struct {
 	tb       testing.TB
 	backend  testBackend
 	reporter report.EventReporter
+	name     string // top-level Describe/DescribeFlat name, used as SuiteStartEvent/SuiteEndEvent.Name
 	seed     int64
 	hasSeed  bool
 
@@ -55,7 +56,7 @@ func Describe(tb testing.TB, name string, fn func(*Spec)) {
 	if tb != nil {
 		backend = asTestBackend(tb)
 	}
-	s := &Spec{tb: tb, backend: backend, arena: CurrentArena(), rootID: rootID, registry: currentRegistry()}
+	s := &Spec{tb: tb, backend: backend, name: name, arena: CurrentArena(), rootID: rootID, registry: currentRegistry()}
 	if fn != nil {
 		fn(s)
 	}
@@ -77,7 +78,7 @@ func describeWithCompilerContext(tb testing.TB, runCtx context.Context, name str
 	if tb != nil {
 		backend = asTestBackend(tb)
 	}
-	s := &Spec{tb: tb, backend: backend, reporter: rep, flat: flat, compiler: c}
+	s := &Spec{tb: tb, backend: backend, reporter: rep, name: name, flat: flat, compiler: c}
 	if fn != nil {
 		fn(s)
 	}
@@ -136,7 +137,7 @@ func DescribeWithReporter(tb testing.TB, name string, rep report.EventReporter, 
 	if tb != nil {
 		backend = asTestBackend(tb)
 	}
-	s := &Spec{tb: tb, backend: backend, reporter: rep, arena: CurrentArena(), rootID: rootID, registry: currentRegistry()}
+	s := &Spec{tb: tb, backend: backend, reporter: rep, name: name, arena: CurrentArena(), rootID: rootID, registry: currentRegistry()}
 	if fn != nil {
 		fn(s)
 	}
@@ -163,7 +164,7 @@ func DescribeFlat(tb testing.TB, name string, fn func(*Spec)) {
 	if tb != nil {
 		backend = asTestBackend(tb)
 	}
-	s := &Spec{tb: tb, backend: backend, arena: CurrentArena(), rootID: rootID, flat: true, registry: currentRegistry()}
+	s := &Spec{tb: tb, backend: backend, name: name, arena: CurrentArena(), rootID: rootID, flat: true, registry: currentRegistry()}
 	if fn != nil {
 		fn(s)
 	}
@@ -190,7 +191,7 @@ func DescribeFlatWithReporter(tb testing.TB, name string, rep report.EventReport
 	if tb != nil {
 		backend = asTestBackend(tb)
 	}
-	s := &Spec{tb: tb, backend: backend, reporter: rep, arena: CurrentArena(), rootID: rootID, flat: true, registry: currentRegistry()}
+	s := &Spec{tb: tb, backend: backend, reporter: rep, name: name, arena: CurrentArena(), rootID: rootID, flat: true, registry: currentRegistry()}
 	if fn != nil {
 		fn(s)
 	}
@@ -240,7 +241,7 @@ func (s *Spec) Compile() {
 	}
 	s.compileOnce.Do(func() {
 		if s.plan != nil {
-			s.suite = &CompiledSuite{Plan: s.plan, Arena: nil, RootID: 0}
+			s.suite = &CompiledSuite{Plan: s.plan, Arena: nil, RootID: 0, Name: s.name, Reporter: s.reporter}
 			return
 		}
 		if s.arena == nil {
@@ -250,7 +251,7 @@ func (s *Spec) Compile() {
 		defer planScratchPool.Put(scratch)
 		plan := newExecutionPlan(countSpecsArena(s.arena, s.rootID))
 		buildExecutionPlanFromArena(s.arena, s.rootID, plan, scratch)
-		s.suite = &CompiledSuite{Plan: plan, Arena: s.arena, RootID: s.rootID}
+		s.suite = &CompiledSuite{Plan: plan, Arena: s.arena, RootID: s.rootID, Name: s.name, Reporter: s.reporter}
 	})
 }
 
