@@ -3,7 +3,10 @@
 // instead of per spec, reducing loop overhead. No allocations during execution.
 package specs
 
-import "testing"
+import (
+	"runtime/debug"
+	"testing"
+)
 
 // DefaultBlockSize is the default number of specs per block when blockSize <= 0.
 const DefaultBlockSize = 8
@@ -54,6 +57,10 @@ func NewBlockRunner(fns []func(*Context), blocks []specBlock) *BlockRunner {
 
 // Run executes all blocks in order; each block runs its specs sequentially. One context
 // from the pool, reused for every spec. No allocations in the loop.
+//
+// A panic in a spec is recovered instead of crashing the process: it's recorded as a failure
+// (via ctx.recordFailure + ctx.backend.Errorf, message and stack trace), and the next spec in the
+// block, and the next block, still run.
 func (r *BlockRunner) Run(tb testing.TB) {
 	if r == nil || tb == nil || len(r.blocks) == 0 {
 		return
@@ -68,16 +75,33 @@ func (r *BlockRunner) Run(tb testing.TB) {
 	ctx.Reset(backend)
 	ctx.SetPathValues(PathValues{})
 
-	fns := r.fns
-	blocks := r.blocks
+	runBlocks(ctx, r.fns, r.blocks)
+}
+
+// runBlocks runs every block's specs sequentially against ctx, recovering each spec individually.
+// Split out from Run so it can be tested without a real testing.TB.
+func runBlocks(ctx *Context, fns []func(*Context), blocks []specBlock) {
 	for bi := 0; bi < len(blocks); bi++ {
 		b := blocks[bi]
 		blockFns := fns[b.start : b.start+b.count]
 		n := len(blockFns)
 		for i := 0; i < n; i++ {
-			blockFns[i](ctx)
+			runBlockSpecRecovered(ctx, blockFns[i])
 		}
 	}
+}
+
+// runBlockSpecRecovered runs a single spec, recovering a panic so it fails just this spec instead
+// of crashing the process. isExpectedAbort sentinels (a controlled backend's FailNow) are already
+// recorded by the backend and must not be reported a second time.
+func runBlockSpecRecovered(ctx *Context, fn func(*Context)) {
+	defer func() {
+		if recovered := recover(); recovered != nil && !isExpectedAbort(recovered) {
+			ctx.recordFailure()
+			ctx.backend.Errorf("panic: %v\n%s", recovered, debug.Stack())
+		}
+	}()
+	fn(ctx)
 }
 
 // NumSpecs returns the total number of specs (sum of all block counts).
