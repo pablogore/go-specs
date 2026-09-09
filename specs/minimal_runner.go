@@ -114,48 +114,27 @@ func runMinimalSpecRecovered(ctx *Context, fn func(*Context)) {
 // spec order (deterministic). workers <= 0 uses GOMAXPROCS. No allocations in the worker loop.
 // tb is used only for reporting (Helper, Fatalf) after workers finish; pass testing.T or a type implementing failureReporter.
 func (r *MinimalRunner) RunParallel(tb failureReporter, workers int) {
-	if r == nil || tb == nil || len(r.specs) == 0 {
-		return
-	}
-	specs := r.specs
-	n := len(specs)
-	if workers <= 0 {
-		workers = runtime.GOMAXPROCS(0)
-	}
-	if workers > n {
-		workers = n
-	}
-	if workers <= 0 {
-		workers = 1
-	}
-
-	results := make([]string, n)
-	backends := make([]parallelBackend, workers)
-	for i := range backends {
-		backends[i].results = &results
-		backends[i].specIndex = -1
-		backends[i].abortOnFatal = true
-	}
-
-	var next uint32
-	var wg sync.WaitGroup
-	for w := 0; w < workers; w++ {
-		wg.Add(1)
-		go func(w int) {
-			defer wg.Done()
-			runWorker(specs, &backends[w], &next, &results)
-		}(w)
-	}
-	wg.Wait()
-
-	reportFailures(tb, results)
+	r.runParallelWith(tb, workers, runWorker)
 }
 
 // RunParallelBatched runs specs in parallel with cache-aware batching. Workers claim chunkSize
 // specs at a time (e.g. 16), reducing atomic contention on the shared counter. chunkSize <= 1
-// uses the same one-at-a-time loop as RunParallel. Deterministic reporting is unchanged.
+// behaves like RunParallel (one spec claimed at a time). Deterministic reporting is unchanged.
 // No allocations in the worker loop.
 func (r *MinimalRunner) RunParallelBatched(tb failureReporter, workers int, chunkSize int) {
+	cs := uint32(chunkSize)
+	if cs < 1 {
+		cs = 1
+	}
+	r.runParallelWith(tb, workers, func(specs []RunSpec, backend *parallelBackend, next *uint32, results *[]string) {
+		runWorkerBatched(specs, backend, next, results, cs)
+	})
+}
+
+// runParallelWith holds the setup shared by RunParallel and RunParallelBatched: worker-count
+// clamping, per-worker backend/result state, goroutine dispatch, and deterministic failure
+// reporting. Only the per-spec claiming strategy (work) differs between the two callers.
+func (r *MinimalRunner) runParallelWith(tb failureReporter, workers int, work func(specs []RunSpec, backend *parallelBackend, next *uint32, results *[]string)) {
 	if r == nil || tb == nil || len(r.specs) == 0 {
 		return
 	}
@@ -169,11 +148,6 @@ func (r *MinimalRunner) RunParallelBatched(tb failureReporter, workers int, chun
 	}
 	if workers <= 0 {
 		workers = 1
-	}
-	cs := uint32(chunkSize)
-	if cs <= 1 {
-		r.RunParallel(tb, workers)
-		return
 	}
 
 	results := make([]string, n)
@@ -190,7 +164,7 @@ func (r *MinimalRunner) RunParallelBatched(tb failureReporter, workers int, chun
 		wg.Add(1)
 		go func(w int) {
 			defer wg.Done()
-			runWorkerBatched(specs, &backends[w], &next, &results, cs)
+			work(specs, &backends[w], &next, &results)
 		}(w)
 	}
 	wg.Wait()
