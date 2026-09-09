@@ -31,7 +31,7 @@ type specItem struct {
 	hookKey string // from b.hookKey() for coalescing without comparing funcs
 }
 
-// Builder compiles a DSL into a Program. Use NewBuilder(), then Describe/BeforeEach/AfterEach/It, then Program() or Build().
+// Builder compiles a DSL into a Program. Use NewBuilder(), then Describe/BeforeEach/AfterEach/It, then Build().
 type Builder struct {
 	program  *Program
 	scopes   []scope
@@ -95,7 +95,7 @@ func (b *Builder) Describe(name string, body func()) {
 	b.scopes = b.scopes[:len(b.scopes)-1]
 }
 
-// ensureScope ensures at least one scope exists (for flat AddBefore/AddAfter/AddSpec without Describe).
+// ensureScope ensures at least one scope exists (for BeforeEach/AfterEach/It used without Describe).
 func (b *Builder) ensureScope() {
 	if len(b.scopes) == 0 {
 		b.scopes = append(b.scopes, scope{})
@@ -280,29 +280,8 @@ func (b *Builder) finalize() {
 	b.program.Groups = groups
 }
 
-// Program returns the compiled program. Safe to call multiple times; do not modify the returned Program's Groups.
-func (b *Builder) Program() *Program {
-	b.finalize()
-	return b.program
-}
-
-// Build returns the compiled program. Same as Program(); kept for API compatibility with flat usage.
+// Build returns the compiled program. Safe to call multiple times; do not modify the returned Program's Groups.
 func (b *Builder) Build() *Program {
 	b.finalize()
 	return b.program
-}
-
-// AddBefore registers a hook to run before each spec (flat API, single scope). Same as BeforeEach in one implicit scope.
-func (b *Builder) AddBefore(fn func(*Context)) {
-	b.BeforeEach(fn)
-}
-
-// AddAfter registers a hook to run after each spec (flat API). Same as AfterEach in one implicit scope.
-func (b *Builder) AddAfter(fn func(*Context)) {
-	b.AfterEach(fn)
-}
-
-// AddSpec registers one spec (flat API). Same as It("", fn).
-func (b *Builder) AddSpec(fn func(*Context)) {
-	b.It("", fn)
 }

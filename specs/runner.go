@@ -32,11 +32,6 @@ func NewRunner(program *Program) *Runner {
 	return &Runner{program: program}
 }
 
-// NewRunnerFromProgram is an alias for NewRunner; kept for API compatibility.
-func NewRunnerFromProgram(program *Program) *Runner {
-	return NewRunner(program)
-}
-
 // NewRunnerWithReporter creates a runner that reports SuiteStarted/SuiteFinished and
 // SpecStarted/SpecFinished events to rep as the program runs. name is used for
 // SuiteStartEvent/SuiteEndEvent.Name; if empty, the backend's name is used instead.
