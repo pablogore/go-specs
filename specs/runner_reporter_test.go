@@ -84,8 +84,13 @@ func TestRunnerWithReporterRecordsSpecAndSuiteDuration(t *testing.T) {
 }
 
 // TestParallelStepWithObserverRecordsPerGoroutineDuration proves each ItParallel spec's Duration is
-// measured against its own goroutine's started event, not shared or reused across specs: only the
-// deliberately slow spec reports a Duration at least as long as the sleep, the fast siblings don't.
+// measured against its own goroutine's started event, not shared or reused across specs.
+//
+// This only asserts a lower bound on the deliberately slow spec and that every spec's reported
+// SpecFinished.SpecStartEvent.Time matches its own SpecStarted.Time exactly — never an upper bound
+// on the fast siblings. An upper-bound/exact-timing assertion on "fast1"/"fast2" (e.g. Duration <
+// sleep) would be flaky under a loaded CI runner, where even an empty spec body can take longer than
+// a short sleep to get scheduled between SpecStarted and SpecFinished.
 func TestParallelStepWithObserverRecordsPerGoroutineDuration(t *testing.T) {
 	const sleep = 20 * time.Millisecond
 	rep := &recordingReporter{}
@@ -100,21 +105,24 @@ func TestParallelStepWithObserverRecordsPerGoroutineDuration(t *testing.T) {
 	}, []string{"fast1", "slow", "fast2"})
 	run(ctx)
 
-	if len(rep.specFinished) != 3 {
-		t.Fatalf("expected three SpecFinished, got %+v", rep.specFinished)
+	if len(rep.specStarted) != 3 || len(rep.specFinished) != 3 {
+		t.Fatalf("expected three SpecStarted/SpecFinished, got started=%+v finished=%+v", rep.specStarted, rep.specFinished)
 	}
-	byName := map[string]time.Duration{}
+	startByName := map[string]time.Time{}
+	for _, e := range rep.specStarted {
+		startByName[e.Name] = e.Time
+	}
 	for _, e := range rep.specFinished {
-		byName[e.Name] = e.Duration
-	}
-	if d, ok := byName["slow"]; !ok || d < sleep {
-		t.Fatalf("expected 'slow' Duration >= %v, got %v (all: %+v)", sleep, d, byName)
-	}
-	if d, ok := byName["fast1"]; !ok || d >= sleep {
-		t.Fatalf("expected 'fast1' Duration < %v, got %v (all: %+v)", sleep, d, byName)
-	}
-	if d, ok := byName["fast2"]; !ok || d >= sleep {
-		t.Fatalf("expected 'fast2' Duration < %v, got %v (all: %+v)", sleep, d, byName)
+		start, ok := startByName[e.Name]
+		if !ok || !e.Time.Equal(start) {
+			t.Fatalf("expected %q's SpecFinished.SpecStartEvent to be its own SpecStarted event, got start=%v finish=%v", e.Name, start, e.Time)
+		}
+		if e.Duration < 0 {
+			t.Fatalf("expected non-negative Duration for %q, got %v", e.Name, e.Duration)
+		}
+		if e.Name == "slow" && e.Duration < sleep {
+			t.Fatalf("expected 'slow' Duration >= %v, got %v", sleep, e.Duration)
+		}
 	}
 }
 
