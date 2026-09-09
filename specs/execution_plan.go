@@ -3,7 +3,6 @@ package specs
 
 import (
 	"context"
-	"io"
 	"runtime/debug"
 	"strings"
 	"sync"
@@ -146,9 +145,11 @@ func collectAncestorIDs(arena *NodeArena, nodeID int) []int {
 
 // CompiledSuite holds the compiled plan and optional arena reference. Run executes the plan.
 type CompiledSuite struct {
-	Plan   *ExecutionPlan
-	Arena  *NodeArena
-	RootID int
+	Plan     *ExecutionPlan
+	Arena    *NodeArena
+	RootID   int
+	Name     string // suite name for SuiteStartEvent/SuiteEndEvent; falls back to the backend's name if empty
+	Reporter report.EventReporter
 }
 
 // Run executes all specs in the plan. Uses one context from the pool per spec (or per path iteration).
@@ -167,8 +168,43 @@ func (s *CompiledSuite) run(tb testing.TB, runCtx context.Context) []proposalCon
 	}
 	backend := asTestBackend(tb)
 	defer putTestBackend(backend)
-	rep := report.New(io.Discard)
-	return runPlanFlatNoSubtests(runCtx, backend, rep, s.Plan)
+
+	if s.Reporter == nil {
+		return runPlanFlatNoSubtests(runCtx, backend, nil, s.Plan)
+	}
+	// counter observes every SpecFinished event to total TotalSpecs/FailedSpecs for SuiteEndEvent:
+	// Paths() can execute a variable number of candidates per plan index, so the plan alone can't
+	// tell us the count up front.
+	counter := &specCounter{EventReporter: s.Reporter}
+	name := s.Name
+	if name == "" {
+		name = backend.Name()
+	}
+	s.Reporter.SuiteStarted(report.SuiteStartEvent{Name: name, Time: time.Now()})
+	results := runPlanFlatNoSubtests(runCtx, backend, counter, s.Plan)
+	s.Reporter.SuiteFinished(report.SuiteEndEvent{
+		Name:        name,
+		Time:        time.Now(),
+		TotalSpecs:  counter.total,
+		FailedSpecs: counter.failed,
+	})
+	return results
+}
+
+// specCounter decorates an EventReporter to tally executed/failed specs for the enclosing suite's
+// SuiteEndEvent, then forwards every event unchanged to the underlying reporter.
+type specCounter struct {
+	report.EventReporter
+	total  int
+	failed int
+}
+
+func (c *specCounter) SpecFinished(e report.SpecResultEvent) {
+	c.total++
+	if e.Failed {
+		c.failed++
+	}
+	c.EventReporter.SpecFinished(e)
 }
 
 func executionContext(tb testing.TB) (context.Context, context.CancelFunc) {
@@ -184,7 +220,7 @@ func executionContext(tb testing.TB) (context.Context, context.CancelFunc) {
 	return context.WithCancel(ctx)
 }
 
-func runPlanFlatNoSubtests(runCtx context.Context, backend testBackend, rep *report.Reporter, plan *ExecutionPlan) []proposalControllerResult {
+func runPlanFlatNoSubtests(runCtx context.Context, backend testBackend, rep report.EventReporter, plan *ExecutionPlan) []proposalControllerResult {
 	results := make([]proposalControllerResult, 0, len(plan.ProgramStart))
 	for i := 0; i < len(plan.ProgramStart); i++ {
 		results = append(results, runExecutionContext(runCtx, backend, rep, plan, i))
@@ -192,17 +228,19 @@ func runPlanFlatNoSubtests(runCtx context.Context, backend testBackend, rep *rep
 	return results
 }
 
-func runExecution(backend testBackend, rep *report.Reporter, plan *ExecutionPlan, i int) proposalControllerResult {
+func runExecution(backend testBackend, rep report.EventReporter, plan *ExecutionPlan, i int) proposalControllerResult {
 	return runExecutionContext(context.Background(), backend, rep, plan, i)
 }
 
-func runExecutionContext(runCtx context.Context, backend testBackend, rep *report.Reporter, plan *ExecutionPlan, i int) proposalControllerResult {
+func runExecutionContext(runCtx context.Context, backend testBackend, rep report.EventReporter, plan *ExecutionPlan, i int) proposalControllerResult {
 	start := plan.ProgramStart[i]
 	length := plan.ProgramLen[i]
 	if start+length > len(plan.Instructions) {
 		return proposalControllerResult{}
 	}
 	program := plan.Instructions[start : start+length]
+	name := specEventName(plan, i)
+	path := specEventPath(plan, i)
 	if i < len(plan.PathGens) && plan.PathGens[i] != nil {
 		gen := plan.PathGens[i]
 		seq := gen.sequence()
@@ -213,7 +251,15 @@ func runExecutionContext(runCtx context.Context, backend testBackend, rep *repor
 			MaxRejections: maxRejections,
 			Propose:       seq.next,
 			Execute: func(candidate proposalCandidate) bool {
-				return !runIsolatedCase(backend, program, candidate.Values).Failed
+				// Every executed candidate is its own spec execution and reports its own
+				// SpecStarted/SpecFinished — not just the last accepted one. Hiding rejected-
+				// then-retried or intermediate Explore candidates would misrepresent how many
+				// executions actually happened, how long the suite really took, and where a
+				// failure occurred.
+				reportSpecStarted(rep, name, path)
+				result := runIsolatedCase(backend, program, candidate.Values)
+				reportSpecFinished(rep, name, path, result.Failed)
+				return !result.Failed
 			},
 			AdmitFeedback: func(feedback proposalFeedback) {
 				seq.admitFeedback(feedback.Candidate.Values, feedback.Passed)
@@ -227,8 +273,45 @@ func runExecutionContext(runCtx context.Context, backend testBackend, rep *repor
 	}()
 	ctx.Reset(backend)
 	ctx.SetPathValues(PathValues{})
+	reportSpecStarted(rep, name, path)
 	runProgram(program, ctx, nil)
+	reportSpecFinished(rep, name, path, ctx.failed)
 	return proposalControllerResult{}
+}
+
+// specEventName returns plan.Names[i], or "" for a plan built without per-spec metadata (e.g. a
+// hand-built ExecutionPlan in a test that only populates Instructions/ProgramStart/ProgramLen).
+func specEventName(plan *ExecutionPlan, i int) string {
+	if i < 0 || i >= len(plan.Names) {
+		return ""
+	}
+	return plan.Names[i]
+}
+
+// specEventPath splits plan.FullNames[i]'s slash-joined breadcrumb back into path segments for
+// SpecStartEvent.Path, or nil for a plan without per-spec metadata (see specEventName).
+func specEventPath(plan *ExecutionPlan, i int) []string {
+	if i < 0 || i >= len(plan.FullNames) || plan.FullNames[i] == "" {
+		return nil
+	}
+	return strings.Split(plan.FullNames[i], "/")
+}
+
+func reportSpecStarted(rep report.EventReporter, name string, path []string) {
+	if rep == nil {
+		return
+	}
+	rep.SpecStarted(report.SpecStartEvent{Name: name, Path: path, Time: time.Now()})
+}
+
+func reportSpecFinished(rep report.EventReporter, name string, path []string, failed bool) {
+	if rep == nil {
+		return
+	}
+	rep.SpecFinished(report.SpecResultEvent{
+		SpecStartEvent: report.SpecStartEvent{Name: name, Path: path, Time: time.Now()},
+		Failed:         failed,
+	})
 }
 
 // runProgram executes one spec's instructions directly in the caller's goroutine (the default,
