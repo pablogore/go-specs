@@ -1,13 +1,19 @@
 # CI: build, vet, and test (including -race) on every PR and push to develop/main.
-# go.mod requires go 1.25.0; the matrix covers that floor plus the latest stable release so
-# neither a too-old nor a too-new toolchain silently goes unchecked.
+# Runs once, on Go 1.25 (the version go.mod requires) and ubuntu-latest only --
+# no version/OS matrix. A matrix earning its cost needs a reason for each leg
+# (an OS-specific bug class, a toolchain deprecation window); this repo never
+# had one, so it was pure CI runtime with no coverage payoff. If a real reason
+# shows up later (e.g. a macOS-only code path), add that leg back deliberately.
 #
-# The `shipwright` job runs unit tests (with race detection baked into the
-# go-test provider itself), lint, and govulncheck as one Dagger-backed
-# workflow (.shipwright/workflow.yaml) with all three steps executing in
-# parallel instead of sequentially. .shipwright/workflow.yaml is the
-# canonical definition of what "go-specs passes CI" means; this file only
-# adds what Shipwright cannot express today.
+# The `shipwright` job runs unit tests, lint, and govulncheck as one
+# Dagger-backed workflow (.shipwright/workflow.yaml) with all three steps
+# executing in parallel instead of sequentially. .shipwright/workflow.yaml is
+# the canonical definition of what "go-specs passes CI" means; this file only
+# adds what Shipwright cannot express today. It complements rather than
+# replaces the `test` job below: Dagger only runs Linux containers and pins
+# its own Go toolchain (not 1.25), so it can't stand in for the native
+# build/vet/test step that actually verifies the go.mod floor compiles and
+# passes. Both run in parallel, so the small overlap on `test` costs nothing.
 #
 # Build and vet stay native because Shipwright has no provider for either
 # on a library module: its only `build` provider compiles a single `main`
@@ -16,15 +22,6 @@
 # already runs vet-equivalent checks, but that's implicit coverage, not a
 # vet gate a manifest can request directly (pablogore/shipwright#273,
 # pablogore/shipwright#274).
-#
-# The Go-version/OS matrix stays native for two independent reasons: Dagger
-# only runs Linux containers, so it structurally cannot cover the macOS
-# leg; and go-test's with-fields expose no Go-version knob (hardcoded to
-# provider's own default), so it can't be pointed at the 1.25 floor or an
-# arbitrary "stable" release either. The unit-test step (with -race) is
-# deliberately redundant with `test`'s ubuntu/stable leg; it's cheap
-# because it runs in parallel with lint/vuln anyway, and lint is coverage
-# this CI didn't have before Shipwright.
 #
 # The job downloads+verifies the pinned shipwright binary itself instead of
 # using pablogore/shipwright's own composite action: that action's v0.12.0
@@ -46,12 +43,7 @@ on:
 
 jobs:
   test:
-    strategy:
-      fail-fast: false
-      matrix:
-        go-version: ["1.25", "stable"]
-        os: [ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     env:
       GOTOOLCHAIN: local
     steps:
@@ -61,7 +53,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: ${{ matrix.go-version }}
+          go-version: "1.25"
           cache: false  # avoid tar "File exists" when restoring cache with toolchain files
 
       - name: Build
