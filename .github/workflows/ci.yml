@@ -2,23 +2,40 @@
 # go.mod requires go 1.25.0; the matrix covers that floor plus the latest stable release so
 # neither a too-old nor a too-new toolchain silently goes unchecked.
 #
-# The `shipwright` job runs unit tests, lint, and govulncheck as one
-# Dagger-backed workflow (.shipwright/workflow.yaml) with all three steps
-# executing in parallel instead of sequentially. It complements rather than
-# replaces the `test` matrix job below: Dagger only runs Linux containers,
-# so it cannot cover the macOS leg or pin an exact non-default Go version --
-# that matrix stays native. The unit-test step is deliberately redundant
-# with `test`'s ubuntu/stable leg; it's cheap because it runs in parallel
-# with lint/vuln anyway, and lint is new coverage this CI didn't have before.
+# The `shipwright` job runs unit tests (with race detection baked into the
+# go-test provider itself), lint, and govulncheck as one Dagger-backed
+# workflow (.shipwright/workflow.yaml) with all three steps executing in
+# parallel instead of sequentially. .shipwright/workflow.yaml is the
+# canonical definition of what "go-specs passes CI" means; this file only
+# adds what Shipwright cannot express today.
+#
+# Build and vet stay native because Shipwright has no provider for either
+# on a library module: its only `build` provider compiles a single `main`
+# binary from `.` (go-specs has none), and no `go-vet` provider is
+# registered anywhere in Shipwright -- golangci-lint's default linter set
+# already runs vet-equivalent checks, but that's implicit coverage, not a
+# vet gate a manifest can request directly (pablogore/shipwright#273,
+# pablogore/shipwright#274).
+#
+# The Go-version/OS matrix stays native for two independent reasons: Dagger
+# only runs Linux containers, so it structurally cannot cover the macOS
+# leg; and go-test's with-fields expose no Go-version knob (hardcoded to
+# provider's own default), so it can't be pointed at the 1.25 floor or an
+# arbitrary "stable" release either. The unit-test step (with -race) is
+# deliberately redundant with `test`'s ubuntu/stable leg; it's cheap
+# because it runs in parallel with lint/vuln anyway, and lint is coverage
+# this CI didn't have before Shipwright.
 #
 # The job downloads+verifies the pinned shipwright binary itself instead of
 # using pablogore/shipwright's own composite action: that action's v0.12.0
 # action.yml has an unrelated bug (a literal `${{ secrets.DAGGER_CLOUD_TOKEN
 # }}` inside an input's `description:` string, which GitHub's own template
 # validator rejects with "Unrecognized named-value: 'secrets'" while just
-# parsing the manifest -- confirmed on this repo's own PR checks). The steps
-# below replicate exactly what that action does (download -> verify
-# checksums.txt -> run), minus the broken manifest.
+# parsing the manifest -- confirmed on this repo's own PR checks, and
+# re-confirmed against the v0.12.0 tag and main tip on 2026-09-10,
+# pablogore/shipwright#275). The steps below replicate exactly what that
+# action does (download -> verify checksums.txt -> run), minus the broken
+# manifest.
 name: CI
 
 on:
