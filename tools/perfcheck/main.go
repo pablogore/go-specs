@@ -33,7 +33,7 @@ func parseGoTestJSON(path string) (map[string]float64, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	// Benchmark line: "BenchmarkFoo-8\t\t10000000\t\t75.2 ns/op\t\t0 B/op\t\t0 allocs/op\n"
 	benchRe := regexp.MustCompile(`^(\S+)\s+(\d+)\s+([\d.]+)\s+ns/op`)

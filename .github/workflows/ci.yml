@@ -1,6 +1,15 @@
 # CI: build, vet, and test (including -race) on every PR and push to develop/main.
 # go.mod requires go 1.24.0; the matrix covers that floor plus the latest stable release so
 # neither a too-old nor a too-new toolchain silently goes unchecked.
+#
+# The `shipwright` job runs unit tests, lint, and govulncheck as one
+# Dagger-backed workflow (.shipwright/workflow.yaml) with all three steps
+# executing in parallel instead of sequentially. It complements rather than
+# replaces the `test` matrix job below: Dagger only runs Linux containers,
+# so it cannot cover the macOS leg or pin an exact non-default Go version --
+# that matrix stays native. The unit-test step is deliberately redundant
+# with `test`'s ubuntu/stable leg; it's cheap because it runs in parallel
+# with lint/vuln anyway, and lint is new coverage this CI didn't have before.
 name: CI
 
 on:
@@ -41,22 +50,15 @@ jobs:
       - name: Test with race detector
         run: go test -race ./...
 
-  govulncheck:
+  shipwright:
     runs-on: ubuntu-latest
-    env:
-      GOTOOLCHAIN: local
     steps:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Set up Go
-        uses: actions/setup-go@v7
+      - name: Run unit/lint/vuln workflow
+        uses: pablogore/shipwright/.github/actions/shipwright@v0.12.0
         with:
-          go-version: "stable"
-          cache: false  # avoid tar "File exists" when restoring cache with toolchain files
-
-      - name: Install govulncheck
-        run: go install golang.org/x/vuln/cmd/govulncheck@latest
-
-      - name: Run govulncheck
-        run: govulncheck ./...
+          version: v0.12.0
+          workflow: .shipwright/workflow.yaml
+          branch: ${{ github.ref_name }}
