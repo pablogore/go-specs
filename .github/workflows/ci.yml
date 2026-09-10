@@ -1,6 +1,24 @@
 # CI: build, vet, and test (including -race) on every PR and push to develop/main.
-# go.mod requires go 1.24.0; the matrix covers that floor plus the latest stable release so
+# go.mod requires go 1.25.0; the matrix covers that floor plus the latest stable release so
 # neither a too-old nor a too-new toolchain silently goes unchecked.
+#
+# The `shipwright` job runs unit tests, lint, and govulncheck as one
+# Dagger-backed workflow (.shipwright/workflow.yaml) with all three steps
+# executing in parallel instead of sequentially. It complements rather than
+# replaces the `test` matrix job below: Dagger only runs Linux containers,
+# so it cannot cover the macOS leg or pin an exact non-default Go version --
+# that matrix stays native. The unit-test step is deliberately redundant
+# with `test`'s ubuntu/stable leg; it's cheap because it runs in parallel
+# with lint/vuln anyway, and lint is new coverage this CI didn't have before.
+#
+# The job downloads+verifies the pinned shipwright binary itself instead of
+# using pablogore/shipwright's own composite action: that action's v0.12.0
+# action.yml has an unrelated bug (a literal `${{ secrets.DAGGER_CLOUD_TOKEN
+# }}` inside an input's `description:` string, which GitHub's own template
+# validator rejects with "Unrecognized named-value: 'secrets'" while just
+# parsing the manifest -- confirmed on this repo's own PR checks). The steps
+# below replicate exactly what that action does (download -> verify
+# checksums.txt -> run), minus the broken manifest.
 name: CI
 
 on:
@@ -14,7 +32,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        go-version: ["1.24", "stable"]
+        go-version: ["1.25", "stable"]
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     env:
@@ -41,22 +59,29 @@ jobs:
       - name: Test with race detector
         run: go test -race ./...
 
-  govulncheck:
+  shipwright:
     runs-on: ubuntu-latest
     env:
-      GOTOOLCHAIN: local
+      SHIPWRIGHT_VERSION: v0.12.0
     steps:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Set up Go
-        uses: actions/setup-go@v7
-        with:
-          go-version: "stable"
-          cache: false  # avoid tar "File exists" when restoring cache with toolchain files
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-      - name: Install govulncheck
-        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+      - name: Download Shipwright
+        run: |
+          curl -fsSL "https://github.com/pablogore/shipwright/releases/download/${SHIPWRIGHT_VERSION}/shipwright-linux-amd64" -o shipwright
+          curl -fsSL "https://github.com/pablogore/shipwright/releases/download/${SHIPWRIGHT_VERSION}/checksums.txt" -o checksums.txt
+          chmod +x shipwright
 
-      - name: Run govulncheck
-        run: govulncheck ./...
+      - name: Verify checksum
+        run: |
+          EXPECTED="$(grep -E '[[:space:]]\*?shipwright-linux-amd64$' checksums.txt | awk '{print $1}')"
+          [ -n "$EXPECTED" ]
+          ACTUAL="$(sha256sum shipwright | awk '{print $1}')"
+          [ "$EXPECTED" = "$ACTUAL" ]
+
+      - name: Run unit/lint/vuln workflow
+        run: ./shipwright --workflow .shipwright/workflow.yaml --branch "${{ github.ref_name }}"
